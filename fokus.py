@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -948,6 +948,8 @@ class Feder:
 
 class App:
     def __init__(self):
+        # Name = AppMutex im Installer: Setup erkennt die laufende App und laesst sie schliessen
+        self._mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Echoblend.Fokus")
         try:
             self.server = ThreadingHTTPServer(("127.0.0.1", PORT), Api)
         except OSError:
