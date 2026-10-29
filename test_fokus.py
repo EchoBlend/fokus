@@ -14,7 +14,7 @@ from http.server import ThreadingHTTPServer
 
 from PIL import Image
 
-from fokus import CW, EW, M, Api, Spotify, Timer, mmss, zeichnen
+from fokus import CW, EW, M, Api, Spotify, Timer, lrc_zeilen, mmss, zeichnen, zeile_bei
 
 
 class Uhr:
@@ -151,6 +151,16 @@ def ws_test():
     time.sleep(0.2)
     assert StubApp.spotify.stand == {"verbunden": False}       # Trennung bemerkt
     srv.shutdown()
+
+    # Songtext: LRC-Zeilen und aktuelle Zeile
+    z = lrc_zeilen("[00:01.00]Eins\n[00:03.50][00:09.00]Zwei\n[00:05.00]\n[ar:Kuenstler]")
+    assert z == [(1.0, "Eins"), (3.5, "Zwei"), (5.0, ""), (9.0, "Zwei")], z
+    assert zeile_bei(z, 0.5) is None
+    assert zeile_bei(z, 2) == "Eins"
+    assert zeile_bei(z, 4) == "Zwei"
+    assert zeile_bei(z, 6) is None          # Instrumental-Luecke
+    assert zeile_bei(z, 99) == "Zwei"
+    print("ok")
 
 
 if __name__ == "__main__":

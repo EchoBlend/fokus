@@ -24,8 +24,10 @@ import os
 import queue
 import sys
 import threading
+import re
 import time
 import tkinter as tk
+import urllib.parse
 import winsound
 from datetime import datetime
 from functools import lru_cache
@@ -35,7 +37,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -253,7 +255,7 @@ def schrift_symbol(px):
 
 
 AUF, ZU, PLAY, PAUSE, STOP, PLUS, MINUS = "\uE70E", "\uE70D", "\uE768", "\uE769", "\uE71A", "\uE710", "\uE738"
-ZURUECK, WEITER = "\uE892", "\uE893"
+ZURUECK, WEITER, MIKRO = "\uE892", "\uE893", "\uE720"
 
 
 def _glatt(e0, e1, x):
@@ -493,7 +495,10 @@ def zeichnen(st, ui, z, cover=None):
         mu = ui["musik"]
         hv = ui.get("hv", 0.0) if mu.get("verbunden") else 0.0     # Maus ueber der Pille
         frei = w - CH - 46 - (44 + 70 * hv if mu.get("verbunden") else 0)
-        lw.text(S(tx), S(y0 + 40), kuerzen(klein, fk, S(frei)), fk, a(GRAU, 255 * ca))
+        if ui.get("zeile"):
+            lw.text(S(tx), S(y0 + 40), kuerzen(ui["zeile"], fk, S(frei)), fk, a(WEISS, 225 * ca))
+        else:
+            lw.text(S(tx), S(y0 + 40), kuerzen(klein, fk, S(frei)), fk, a(GRAU, 255 * ca))
         if mu.get("verbunden"):
             # beim Hover rueckt das Cover nach links, zurueck/weiter blenden daneben ein
             kx, ky, kg = x0 + w - 86 - 34 * hv, y0 + 9, 30
@@ -657,7 +662,10 @@ def zeichnen(st, ui, z, cover=None):
             ft, fa = schrift(round(S(13)), 620), schrift(round(S(11.5)), 460)
             breite = S(Rr - 120 - tx)
             lw.text(S(tx), S(ky0 + 30), kuerzen(mu.get("titel") or "–", ft, breite), ft, a(WEISS, ein(255)))
-            lw.text(S(tx), S(ky0 + 46), kuerzen(mu.get("kuenstler") or "", fa, breite), fa, a(GRAU, ein(255)))
+            if ui.get("zeile"):
+                lw.text(S(tx), S(ky0 + 46), kuerzen(ui["zeile"], fa, S(Rr - 16 - tx)), fa, a(WEISS, ein(235)))
+            else:
+                lw.text(S(tx), S(ky0 + 46), kuerzen(mu.get("kuenstler") or "", fa, breite), fa, a(GRAU, ein(255)))
             my = ky0 + 30
             for name, sx in (("zurueck", Rr - 98), ("playpause", Rr - 62), ("weiter", Rr - 26)):
                 an = zone(name, sx - 17, my - 17, sx + 17, my + 17)
@@ -669,7 +677,13 @@ def zeichnen(st, ui, z, cover=None):
                     lw.text(S(sx), S(my), ZURUECK if name == "zurueck" else WEITER, symbolschrift(round(S(11))),
                             a(WEISS if an else (200, 200, 206), ein(255)), "mm")
             # Lautstaerke: Trefferflaeche = exakte Reglerbreite, damit Klick-x direkt der Wert ist
-            vx0, vx1, vy = tx, Rr - 16, ky0 + 64
+            vx0, vx1, vy = tx, Rr - 48, ky0 + 64
+            mx, text_an = Rr - 26, ui.get("text_an")          # Songtext ein/aus
+            an = zone("text", mx - 14, vy - 12, mx + 14, vy + 12)
+            lw.kreis(S(mx), S(vy), S(12), a(TOENE["arbeit"][0] if text_an else WEISS,
+                                            ein(70 if text_an else (36 if an else 0))))
+            lw.text(S(mx), S(vy), MIKRO, symbolschrift(round(S(11))),
+                    a(WEISS if text_an or an else (200, 200, 206), ein(255)), "mm")
             an = zone("lautstaerke", vx0, vy - 10, vx1, vy + 10)
             v = mu.get("lautstaerke")
             lw.box(S(vx0), S(vy - 2), S(vx1), S(vy + 2), S(2), a(WEISS, ein(30)))
@@ -756,6 +770,46 @@ class WsVerbindung:
         self._schicken(1, json.dumps(obj).encode("utf-8"))
 
 
+def lrc_zeilen(lrc):
+    """'[01:02.50] Text' -> [(62.5, 'Text'), ...] sortiert; Leerzeilen bleiben (Instrumental-Luecke)."""
+    zeilen = []
+    for roh in (lrc or "").splitlines():
+        marken = re.findall(r"\[(\d+):(\d+(?:\.\d+)?)\]", roh)
+        text = re.sub(r"\[[^\]]*\]", "", roh).strip()
+        zeilen += [(int(mi) * 60 + float(se), text) for mi, se in marken]
+    return sorted(zeilen)
+
+
+def zeile_bei(zeilen, t):
+    """Zeile, die zur Sekunde t laeuft, sonst None."""
+    aktuell = None
+    for z, text in zeilen:
+        if z > t:
+            break
+        aktuell = text
+    return aktuell or None
+
+
+def songtext_laden(titel, kuenstler, dauer):
+    """Synchroner Songtext von lrclib.net (frei, ohne Schluessel); [] wenn keiner da ist."""
+    kopf = {"User-Agent": f"Fokus/{VERSION} (Echoblend)"}
+    q = {"track_name": titel, "artist_name": (kuenstler or "").split(",")[0].strip()}
+    suche = urllib.parse.urlencode(q)
+    if dauer:
+        q["duration"] = int(dauer)
+    for url in ("https://lrclib.net/api/get?" + urllib.parse.urlencode(q),
+                "https://lrclib.net/api/search?" + suche):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=kopf), timeout=8) as r:
+                d = json.loads(r.read(2_000_000))
+        except Exception:
+            continue
+        for treffer in (d if isinstance(d, list) else [d]):
+            if isinstance(treffer, dict) and treffer.get("syncedLyrics"):
+                return lrc_zeilen(treffer["syncedLyrics"])
+    return []
+
+
 class Spotify:
     """Stand des Spotify-Tabs + Befehle dorthin. Wird aus HTTP-Threads und dem
     Tk-Thread benutzt; nur einfache Zuweisungen, der GIL reicht."""
@@ -763,6 +817,8 @@ class Spotify:
 
     def __init__(self):
         self.ws, self.stand, self.cover, self._cover_url = None, {"verbunden": False}, None, None
+        self._pos_t = time.time()
+        self.text_an, self.text, self._text_fuer = False, [], None     # Songtext: an/aus, Zeilen, fuer welchen Song
 
     def verbunden(self, ws):
         self.ws = ws
@@ -779,7 +835,9 @@ class Spotify:
         if not isinstance(d, dict):
             return
         self.stand = {k: d.get(k) for k in ("verbunden", "titel", "kuenstler", "spielt", "lautstaerke", "bild",
-                                            "gefunden")}
+                                            "pos", "dauer", "gefunden")}
+        self._pos_t = time.time()
+        self._text_pruefen()
         url = d.get("bild")
         if url != self._cover_url:
             self._cover_url, self.cover = url, None
@@ -799,6 +857,35 @@ class Spotify:
         except Exception:
             pass
 
+    def position(self):
+        """Sekunden im Song, zwischen den Meldungen des Tabs weitergezaehlt."""
+        pos = self.stand.get("pos")
+        if not isinstance(pos, (int, float)):
+            return None
+        return pos + (time.time() - self._pos_t if self.stand.get("spielt") else 0.0)
+
+    def text_umschalten(self, an=None):
+        self.text_an = (not self.text_an) if an is None else bool(an)
+        self._text_pruefen()
+
+    def _text_pruefen(self):
+        """Songtext holen, wenn er an ist und ein anderer Song laeuft."""
+        song = (self.stand.get("titel"), self.stand.get("kuenstler"))
+        if not self.text_an or not song[0] or song == self._text_fuer:
+            return
+        self._text_fuer, self.text = song, []
+
+        def holen():
+            zeilen = songtext_laden(song[0], song[1], self.stand.get("dauer"))
+            if self._text_fuer == song:
+                self.text = zeilen
+        threading.Thread(target=holen, daemon=True).start()
+
+    def zeile(self):
+        """Aktuelle Songtextzeile oder None (aus, nicht gefunden, Instrumental)."""
+        t = self.position()
+        return zeile_bei(self.text, t + 0.3) if self.text_an and self.text and t is not None else None
+
     def befehl(self, cmd, wert=None):
         if cmd not in self.BEFEHLE or not self.ws:
             return False
@@ -814,7 +901,8 @@ class Spotify:
             return False
 
     def fuer_claude(self):
-        return {k: v for k, v in self.stand.items() if k != "bild"}
+        return dict({k: v for k, v in self.stand.items() if k != "bild"}, songtext=self.text_an,
+                    zeile=self.zeile())
 
 
 class Api(BaseHTTPRequestHandler):
@@ -962,6 +1050,7 @@ class App:
         self.timer = Timer()
         self.timer.ziel_min = int(self.cfg.get("ziel_min", 50))
         self.timer.pause_min = int(self.cfg.get("pause_min", 10))
+        self.spotify.text_umschalten(self.cfg.get("songtext", False))
         self.letzter_stand = self.timer.stand()
 
         self.feder, self.anker, self.tab = Feder(), "r", "fokus"
@@ -1063,6 +1152,11 @@ class App:
             self.ausfuehren({"aktion": "start"})
 
     def _klick(self, zone):
+        if zone == "text":
+            self.spotify.text_umschalten()
+            self.cfg["songtext"] = self.spotify.text_an
+            speichere_config(self.cfg)
+            return
         if zone in ("cover", "playpause", "weiter", "zurueck"):
             self.spotify.befehl("playpause" if zone == "cover" else zone)
             return
@@ -1232,7 +1326,8 @@ class App:
         sp = self.spotify
         ui = {"m": self.feder.x, "anker": self.anker, "hover": self.hover, "tab": self.tab,
               "puls": round(puls, 2), "jetzt": time.time() // 60 * 60,
-              "musik": sp.stand, "cover_da": sp.cover is not None, "hv": round(self.hfeder.x, 3)}
+              "musik": sp.stand, "cover_da": sp.cover is not None, "hv": round(self.hfeder.x, 3),
+              "text_an": sp.text_an, "zeile": sp.zeile()}
         schluessel = json.dumps([st, ui], sort_keys=True)
         if schluessel == self._schluessel:
             return

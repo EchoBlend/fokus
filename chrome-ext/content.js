@@ -31,6 +31,21 @@ function lautAnzeige() {
 
 let methode = null;
 
+// "1:23" / "1:02:03" -> Sekunden
+function sek(t) {
+  if (!t) return null;
+  const n = t.trim().split(":").map(Number);
+  return n.some(isNaN) ? null : n.reduce((a, b) => a * 60 + b, 0);
+}
+
+// Abspielposition fuer den Songtext; Rueckfall: Fortschrittsregler (Werte in ms)
+function position() {
+  const p = $('[data-testid="playback-position"]'), d = $('[data-testid="playback-duration"]');
+  if (p && d) return [sek(p.textContent), sek(d.textContent)];
+  const r = $('[data-testid="playback-progressbar"] input[type="range"]');
+  return r ? [Number(r.value) / 1000, Number(r.max) / 1000] : [null, null];
+}
+
 function stand() {
   const ms = navigator.mediaSession;
   const md = ms && ms.metadata;
@@ -44,6 +59,7 @@ function stand() {
     .map((e) => e.textContent).join(", ");
   const art = md && md.artwork && md.artwork.length ? md.artwork[md.artwork.length - 1].src : null;
   const img = $('[data-testid="now-playing-widget"] img');
+  const [pos, dauer] = position();
   return {
     verbunden: true,
     titel: (md && md.title) || (titelEl && titelEl.textContent) || "",
@@ -51,12 +67,15 @@ function stand() {
     bild: art || (img && img.src) || null,
     spielt,
     lautstaerke: lautAnzeige(),
+    pos,
+    dauer,
     gefunden: {
       playpause: !!pp,
       weiter: !!$(`[data-testid="${KNOEPFE.weiter}"]`),
       zurueck: !!$(`[data-testid="${KNOEPFE.zurueck}"]`),
       regler: !!r,
       leiste: !!leiste(),
+      position: pos !== null,
       methode,
       mediasession: !!md,
     },
