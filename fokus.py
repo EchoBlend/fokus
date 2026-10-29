@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -312,33 +312,49 @@ class Leinwand:
             ziel *= rest
             ziel += k
 
+    def _form(self, x0, y0, x1, y1, r, aussen, k, innen, farbe, deckung):
+        """Abgerundete Form: Abstandsfeld nur am Rand (Streifen + Eckbloecke). Das Kreuz im Inneren,
+        mehr als k Pixel vom Rand, hat die feste Deckung innen (None = nichts) — beim grossen
+        Panel spart das den Grossteil der Rechnung."""
+        W, H = self.w, self.h
+        kx = lambda v: min(W, max(0, v))
+        ky = lambda v: min(H, max(0, v))
+        xa, xb = kx(math.ceil(x0 + k)), kx(math.ceil(x0 + r + k))
+        xc, xd = kx(int(x1 - r - k)), kx(int(x1 - k))
+        ya, yb = ky(math.ceil(y0 + k)), ky(math.ceil(y0 + r + k))
+        yc, yd = ky(int(y1 - r - k)), ky(int(y1 - k))
+        ox0, oy0, ox1, oy1 = x0 - aussen, y0 - aussen, x1 + aussen, y1 + aussen
+        if not (xa <= xb <= xc <= xd and ya <= yb <= yc <= yd):
+            rand = [(ox0, oy0, ox1, oy1)]
+        else:
+            if innen is not None:
+                for ys, xs in ((slice(yb, yc), slice(xa, xd)), (slice(ya, yb), slice(xb, xc)),
+                               (slice(yc, yd), slice(xb, xc))):
+                    if ys.stop > ys.start and xs.stop > xs.start:
+                        self._ueber((ys, xs), farbe, innen)
+            rand = [(ox0, oy0, ox1, ya), (ox0, yd, ox1, oy1), (ox0, ya, xa, yd), (xd, ya, ox1, yd),
+                    (xa, ya, xb, yb), (xc, ya, xd, yb), (xa, yc, xb, yd), (xc, yc, xd, yd)]
+        for rect in rand:
+            f = self._feld(*rect)
+            if f is not None:
+                sl, xx, yy = f
+                self._ueber(sl, farbe, deckung(xx, yy))
+
     def box(self, x0, y0, x1, y1, r, farbe, maske=None):
-        f = self._feld(x0 - 1, y0 - 1, x1 + 1, y1 + 1)
-        if f is None:
-            return
-        sl, xx, yy = f
-        cov = np.clip(0.5 - _box_abstand(xx, yy, x0, y0, x1, y1, r), 0, 1)
-        self._ueber(sl, farbe, cov)
+        self._form(x0, y0, x1, y1, r, 1, 1, 1.0, farbe,
+                   lambda xx, yy: np.clip(0.5 - _box_abstand(xx, yy, x0, y0, x1, y1, r), 0, 1))
 
     def schatten(self, x0, y0, x1, y1, r, weich, farbe):
-        f = self._feld(x0 - 2 * weich, y0 - 2 * weich, x1 + 2 * weich, y1 + 2 * weich)
-        if f is None:
-            return
-        sl, xx, yy = f
-        cov = 1 - _glatt(-weich, weich, _box_abstand(xx, yy, x0, y0, x1, y1, r))
-        self._ueber(sl, farbe, cov)
+        self._form(x0, y0, x1, y1, r, 2 * weich, weich + 1, 1.0, farbe,
+                   lambda xx, yy: 1 - _glatt(-weich, weich, _box_abstand(xx, yy, x0, y0, x1, y1, r)))
 
     def rand(self, x0, y0, x1, y1, r, oben, unten, dicke=1.0):
         """Feine Kante, oben heller als unten (Glas-Lichtkante)."""
-        f = self._feld(x0 - 1, y0 - 1, x1 + 1, y1 + 1)
-        if f is None:
-            return
-        sl, xx, yy = f
-        d = _box_abstand(xx, yy, x0, y0, x1, y1, r)
-        cov = np.clip(dicke - np.abs(d + dicke / 2 + 0.25), 0, 1)
-        t = np.clip((yy - y0) / max(1.0, y1 - y0), 0, 1)
-        cov *= oben + (unten - oben) * np.sqrt(t)
-        self._ueber(sl, (255, 255, 255, 255), cov)
+        def deckung(xx, yy):
+            d = _box_abstand(xx, yy, x0, y0, x1, y1, r)
+            cov = np.clip(dicke - np.abs(d + dicke / 2 + 0.25), 0, 1)
+            return cov * (oben + (unten - oben) * np.sqrt(np.clip((yy - y0) / max(1.0, y1 - y0), 0, 1)))
+        self._form(x0, y0, x1, y1, r, 1, 1.5 * dicke + 1, None, (255, 255, 255, 255), deckung)
 
     def kreis(self, cx, cy, r, farbe):
         self.box(cx - r, cy - r, cx + r, cy + r, r, farbe)
@@ -498,7 +514,12 @@ class Leinwand:
 
     def bgra(self, ys=slice(None), xs=slice(None)):
         a = self.a[:, ys, xs]
-        return (np.stack([a[2], a[1], a[0], a[3]], -1) * 255 + 0.5).astype(np.uint8)
+        out, tmp = np.empty(a.shape[1:] + (4,), np.uint8), np.empty(a.shape[1:], np.float32)
+        for i, k in enumerate((2, 1, 0, 3)):             # kanalweise: ~7x schneller als stack
+            np.multiply(a[k], 255, out=tmp)
+            tmp += 0.5
+            out[..., i] = tmp
+        return out
 
 
 def flip_nachmalen(lw, bild, fp):
@@ -1642,7 +1663,9 @@ class App:
             self._klang = True
         self._malen()
         schnell = not all(f.ruhig for f in self.federn) or any(self._p(n) < 1 for n in self.anim)
-        self._takt_job = self.root.after(15 if schnell else (50 if st["faellig"] else 200), self._takt)
+        # Bildabstand ab Beginn des Takts, nicht ab Ende des Malens — sonst addiert sich die Malzeit
+        rest = 16 - round((time.perf_counter() - jetzt) * 1000)
+        self._takt_job = self.root.after(max(1, rest) if schnell else (50 if st["faellig"] else 200), self._takt)
 
     def _wecken(self):
         """Naechstes Bild sofort statt nach bis zu 200 ms (Hover, Klick)."""
@@ -1718,15 +1741,8 @@ class App:
         basis = json.dumps([st_k, dict(ui, fp=None)], sort_keys=True)
         if basis == getattr(self, "_basis", None) and getattr(self, "_bild", None) is not None and LETZTE is not None:
             bild = flip_nachmalen(LETZTE, self._bild, ui["fp"])        # nur die Klappziffern
-        elif self.feder.ruhig and self.lfeder.ruhig:
+        else:   # immer volle Aufloesung: halbe war beim Auf-/Zuklappen sichtbar unscharf
             bild, self.zonen = zeichnen(st, ui, self.z, self._cover, self._cover_alt)
-        else:
-            # ponytail: waehrend der Feder halbe Aufloesung + hochskalieren (~3x schneller);
-            # die Bewegung verdeckt die Unschaerfe, in Ruhe wird scharf gemalt
-            klein, zonen = zeichnen(st, ui, self.z / 2, self._cover, self._cover_alt)
-            groesse = (round(WW * self.z), min(round(WH * self.z), round(hoehe(ui) * self.z)))
-            bild = np.asarray(Image.fromarray(klein, "RGBA").resize(groesse, Image.BILINEAR))
-            self.zonen = [(n,) + tuple(v * 2 for v in r) for n, *r in zonen]
         voll = self.feder.ruhig and self.lfeder.ruhig
         self._basis, self._bild = (basis, bild) if voll else (None, None)
         self.ebene.zeigen(np.ascontiguousarray(bild), round(WH * self.z))
