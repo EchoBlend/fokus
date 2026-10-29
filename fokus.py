@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -584,6 +584,7 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
     r = min(h / 2, CH / 2 + (26 - CH / 2) * min(1.0, max(0.0, m)) * 1.0)
     X0, Y0, X1, Y1, R = S(x0), S(y0), S(x0 + w), S(y0 + h), S(r)
     ty0, kh = y0 + h + 8, (LH - 16) * max(0.0, ly)      # Songtext-Karte haengt unter der Pille
+    kx0, kx1 = M, M + EW                                 # immer volle Panelbreite, sonst sind Zeilen zu kurz
     zonen = []
     hov = ui["hover"]
 
@@ -607,9 +608,9 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
     else:
         flaechen = [(X0, Y0, X1, Y1, R)]
         if ly > 0.02:
-            flaechen.append((X0, S(ty0), X1, S(ty0 + kh), S(min(22, kh / 2))))
+            flaechen.append((S(kx0), S(ty0), S(kx1), S(ty0 + kh), S(min(22, kh / 2))))
         for f in flaechen:
-            lw.schatten(f[0], f[1] + S(8), f[2], f[3] + S(8), f[4], S(18), (0, 0, 0, 120))
+            lw.schatten(f[0], f[1] + S(5), f[2], f[3] + S(5), f[4], S(10), (0, 0, 0, 120))
             lw.schatten(f[0], f[1] + S(1), f[2], f[3] + S(1), f[4], S(3), (0, 0, 0, 90))
         for f in flaechen:
             lw.box(*f, (16, 16, 19, 238))
@@ -684,8 +685,8 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
     if ly > 0.02 and mu.get("verbunden"):
         ty1 = ty0 + kh
         sa = max(0.0, min(1.0, (ly - 0.3) / 0.5))
-        L_, R_ = x0 + 18, x0 + w - 18
-        clip = (S(x0), S(ty0 + 4), S(x0 + w), S(ty1 - 4))
+        L_, R_ = kx0 + 18, kx1 - 18
+        clip = (S(kx0), S(ty0 + 4), S(kx1), S(ty1 - 4))
         zeilen, idx = ui.get("zeilen") or [], ui.get("idx", -1)
         mitte = ty0 + 44
         gs = 14 + 2 * min(1.0, max(0.0, m))               # breitere Karte = groessere Schrift
@@ -1046,7 +1047,7 @@ class Spotify:
 
     def __init__(self):
         self.ws, self.stand, self.cover, self._cover_url = None, {"verbunden": False}, None, None
-        self._pos_t = time.time()
+        self._pos_t, self._pos_roh = time.time(), None
         self.text_an, self.text, self._text_fuer = False, [], None     # Songtext: an/aus, Zeilen, fuer welchen Song
         self.text_status = "keiner"                                     # laedt | da | keiner
 
@@ -1064,9 +1065,16 @@ class Spotify:
     def empfangen(self, d):
         if not isinstance(d, dict):
             return
+        vorher, roh = self.position(), d.get("pos")
         self.stand = {k: d.get(k) for k in ("verbunden", "titel", "kuenstler", "spielt", "lautstaerke", "bild",
                                             "pos", "dauer", "gefunden")}
-        self._pos_t = time.time()
+        # pos kommt in ganzen Sekunden, ~0.3 s nach dem Sekundenwechsel (Observer-Verzoegerung im Tab).
+        # Nur beim Wechsel neu ankern; sonst weiterzaehlen statt auf den abgerundeten Wert zurueckzufallen.
+        if roh != self._pos_roh or vorher is None or not isinstance(roh, (int, float)) or abs(vorher - roh) > 1.5:
+            self._pos_t = time.time() - 0.3
+        else:
+            self.stand["pos"], self._pos_t = vorher, time.time()
+        self._pos_roh = roh
         self._text_pruefen()
         url = d.get("bild")
         if url != self._cover_url:
@@ -1274,8 +1282,6 @@ class Feder:
 
 class App:
     def __init__(self):
-        # Name = AppMutex im Installer: Setup erkennt die laufende App und laesst sie schliessen
-        self._mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Echoblend.Fokus")
         try:
             self.server = ThreadingHTTPServer(("127.0.0.1", PORT), Api)
         except OSError:

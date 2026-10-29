@@ -10,11 +10,11 @@ AppId={{5C1F7A2E-9D3B-4E8A-B6C4-7F2E1A9D0303}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher=Echoblend
-; Laufende App erkennen (Name wie in fokus.py App.__init__) und erst schliessen lassen
-AppMutex=Echoblend.Fokus
 DefaultDirName={autopf}\{#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+; PrepareToInstall beendet Fokus per taskkill; der Restart Manager schafft das Tk-Fenster nicht und braeche ab
+CloseApplications=no
 OutputDir=..\dist\installer
 OutputBaseFilename={#MyAppName}-Setup-{#MyAppVersion}
 SetupIconFile=..\assets\fokus.ico
@@ -48,3 +48,17 @@ Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: startu
 [Run]
 Filename: "{app}\{#MyAppExe}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 Filename: "{app}\chrome-ext"; Description: "Erweiterungsordner öffnen"; Flags: shellexec postinstall skipifsilent unchecked
+
+[UninstallRun]
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM {#MyAppExe}"; Flags: runhidden; RunOnceId: "KillFokus"
+
+[Code]
+// Fokus laeuft meist im Infobereich; statt per AppMutex abzubrechen, beendet das Setup es selbst.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Code: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM {#MyAppExe}', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Sleep(500);
+  Result := '';
+end;
