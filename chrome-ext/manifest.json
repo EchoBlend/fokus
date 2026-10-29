@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Fokus – Spotify-Brücke",
+  "version": "1.0",
+  "description": "Verbindet den Spotify-Web-Player mit der Fokus-App auf diesem PC (127.0.0.1).",
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["https://open.spotify.com/*"], "js": ["content.js"], "run_at": "document_idle" }
+  ],
+  "host_permissions": ["https://open.spotify.com/*", "http://127.0.0.1/*"],
+  "permissions": ["alarms", "scripting"]
+}
