@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -699,12 +699,13 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
             for i in range(max(0, idx - 2), min(len(zeilen), idx + 4)):
                 d = (i - idx) + (1 - zp) * sprung         # Lage relativ zur laufenden Zeile, gefedert
                 nah = max(0.0, 1 - abs(d))
-                al = max(0.0, 1 + d * 0.75) * 0.32 if d < 0 else max(0.0, 1 - d * 0.28) * 0.36
+                al = max(0.0, 1 + d * 0.75) * 0.32 if d < 0 else max(0.0, 1 - d * 0.3) * 0.66
                 al = al + (1 - al) * nah
+                un = abs(d) if d < 0 else max(0.0, d - 1)      # naechste Zeile bleibt scharf und lesbar
                 txt = zeilen[i] or "• • •"
                 f_ = schrift(round(S(gs + 2 * nah)), 700)
                 lw.text(S(L_), S(mitte + d * lz), kuerzen(txt, f_, S(R_ - L_)), f_,
-                        a(WEISS, 255 * al * sa), blur=S(min(3.0, abs(d) * 1.4)), clip=clip)
+                        a(WEISS, 255 * al * sa), blur=S(min(3.0, un * 1.4)), clip=clip)
 
     # --- auf ---
     ea0 = max(0.0, min(1.0, (m - 0.3) / 0.4))
@@ -1004,6 +1005,33 @@ def lrc_zeilen(lrc):
     return sorted(zeilen)
 
 
+def zeilen_teilen(zeilen, passt):
+    """Zu lange Zeilen in eigene, ausgewogene Zeilen teilen; die Zeit bis zur naechsten
+    Zeile wird nach Textlaenge aufgeteilt. passt(text) -> bool sagt, ob eine Zeile in die Karte passt."""
+    aus = []
+    for k, (t0, text) in enumerate(zeilen):
+        woerter = text.split()
+        if passt(text) or len(woerter) < 2:
+            aus.append((t0, text))
+            continue
+        t1 = zeilen[k + 1][0] if k + 1 < len(zeilen) else t0 + 4.0
+        for n in range(2, len(woerter) + 1):            # so wenige Teile wie moeglich, gleich lang
+            ziel, teile, akt = len(text) / n, [], []
+            for w in woerter:
+                if akt and len(" ".join(akt + [w])) > ziel * 1.15 and len(teile) < n - 1:
+                    teile.append(" ".join(akt))
+                    akt = []
+                akt.append(w)
+            teile.append(" ".join(akt))
+            if all(passt(x) for x in teile):
+                break
+        vorher = 0
+        for x in teile:
+            aus.append((t0 + (t1 - t0) * vorher / len(text), x))
+            vorher += len(x) + 1
+    return aus
+
+
 def index_bei(zeilen, t):
     """Index der Zeile, die zur Sekunde t laeuft; -1 vor der ersten."""
     i = -1
@@ -1034,9 +1062,13 @@ def songtext_laden(titel, kuenstler, dauer):
                 d = json.loads(r.read(2_000_000))
         except Exception:
             continue
-        for treffer in (d if isinstance(d, list) else [d]):
+        treffer_liste = d if isinstance(d, list) else [d]
+        if dauer:                                        # andere Fassung = verschobenes Timing
+            treffer_liste.sort(key=lambda x: abs((x.get("duration") or 0) - dauer) if isinstance(x, dict) else 1e9)
+        for treffer in treffer_liste:
             if isinstance(treffer, dict) and treffer.get("syncedLyrics"):
-                return lrc_zeilen(treffer["syncedLyrics"])
+                f = schrift(18, 700)                     # groesste Schrift der Karte
+                return zeilen_teilen(lrc_zeilen(treffer["syncedLyrics"]), lambda x: f.getlength(x) <= EW - 44)
     return []
 
 

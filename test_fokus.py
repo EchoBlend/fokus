@@ -14,7 +14,7 @@ from http.server import ThreadingHTTPServer
 
 from PIL import Image
 
-from fokus import CW, EW, M, Api, Spotify, Timer, lrc_zeilen, mmss, zeichnen, zeile_bei
+from fokus import CW, EW, M, Api, Spotify, Timer, lrc_zeilen, mmss, zeilen_teilen, zeichnen, zeile_bei
 
 
 class Uhr:
@@ -155,6 +155,8 @@ def ws_test():
     # Songtext: LRC-Zeilen und aktuelle Zeile
     z = lrc_zeilen("[00:01.00]Eins\n[00:03.50][00:09.00]Zwei\n[00:05.00]\n[ar:Kuenstler]")
     assert z == [(1.0, "Eins"), (3.5, "Zwei"), (5.0, ""), (9.0, "Zwei")], z
+    g = zeilen_teilen([(10.0, "aaaa bbbb cccc dddd"), (20.0, "kurz")], lambda x: len(x) <= 10)
+    assert [(round(t), x) for t, x in g] == [(10, "aaaa bbbb"), (15, "cccc dddd"), (20, "kurz")], g
     assert zeile_bei(z, 0.5) is None
     assert zeile_bei(z, 2) == "Eins"
     assert zeile_bei(z, 4) == "Zwei"
