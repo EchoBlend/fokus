@@ -4,8 +4,10 @@ Schwebende Worktimer-Pille für Windows: Fokus- und Pausentimer, Tagesleiste, Sp
 
 ## Installieren
 
-1. `Fokus.exe` aus dem neuesten Release laden und starten. Die Pille erscheint oben rechts, das Symbol im Infobereich (unten rechts) blendet sie aus oder beendet sie.
-2. Spotify: `chrome-ext.zip` entpacken, in `chrome://extensions` den Entwicklermodus einschalten, „Entpackte Erweiterung laden“ und den Ordner wählen. Danach den Spotify-Tab neu laden.
+1. `Fokus-Setup-<version>.exe` aus dem neuesten Release ausführen. Die Pille erscheint oben rechts, das Symbol im Infobereich (unten rechts) blendet sie aus oder beendet sie.
+2. Spotify: in `chrome://extensions` den Entwicklermodus einschalten, „Entpackte Erweiterung laden“ und `%LocalAppData%\Programs\Fokus\chrome-ext` wählen (Startmenü: „Fokus – Chrome-Erweiterung (Ordner)“). Danach den Spotify-Tab neu laden.
+
+Bauen: `powershell -File build.ps1` (Tests, Fokus.exe, Setup in `dist\installer`).
 
 ## Bedienung
 
