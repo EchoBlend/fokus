@@ -35,9 +35,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.1.2"
+VERSION = "0.2.0"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -45,8 +45,9 @@ CONFIG = DIR / "config.json"
 
 CW, CH = 276, 48        # Pille zu (logische Pixel)
 EW, EH = 344, 404       # Panel auf
+LH = 124                # Songtext-Karte, waechst unter dem Panel auf
 M = 24                  # Rand fuer den Schatten
-WW, WH = EW + 2 * M, EH + 2 * M
+WW, WH = EW + 2 * M, EH + LH + 2 * M
 
 GWL_EXSTYLE = -20
 WS_EX_LAYERED = 0x80000
@@ -369,20 +370,101 @@ class Leinwand:
         self._ueber(sl, c2[:3] + (255,), glanz)
         self._ueber(sl, farbe, np.maximum(np.maximum(bogen, kopf), anfang) * alpha)
 
-    def text(self, x, y, s, font, farbe, anker="ls"):
+    def text(self, x, y, s, font, farbe, anker="ls", blur=0.0, clip=None):
+        """blur in Pixeln (weich ein-/ausblenden); clip=(x0,y0,x1,y1) schneidet ab."""
         if not s or farbe[3] <= 0:
             return
+        rand = int(math.ceil(blur * 2))
         l, t, r, b = font.getbbox(s, anchor=anker)
-        maske = Image.new("L", (max(1, r - l), max(1, b - t)))
-        ImageDraw.Draw(maske).text((-l, -t), s, font=font, fill=255, anchor=anker)
-        x0, y0 = int(round(x)) + l, int(round(y)) + t
-        f = self._feld(x0, y0, x0 + maske.width, y0 + maske.height)
+        maske = Image.new("L", (max(1, r - l) + 2 * rand, max(1, b - t) + 2 * rand))
+        ImageDraw.Draw(maske).text((rand - l, rand - t), s, font=font, fill=255, anchor=anker)
+        if blur > 0.3:
+            maske = maske.filter(ImageFilter.GaussianBlur(blur))
+        x0, y0 = int(round(x)) + l - rand, int(round(y)) + t - rand
+        x1, y1 = x0 + maske.width, y0 + maske.height
+        if clip:
+            f = self._feld(max(x0, clip[0]), max(y0, clip[1]), min(x1, clip[2]), min(y1, clip[3]))
+        else:
+            f = self._feld(x0, y0, x1, y1)
         if f is None:
             return
         sl, _, _ = f
         m = np.asarray(maske, np.float32) / 255.0
         m = m[sl[0].start - y0:sl[0].stop - y0, sl[1].start - x0:sl[1].stop - x0]
         self._ueber(sl, farbe, m)
+
+    def flip(self, x, y, alt, neu, font, farbe, p):
+        """Klappzahl (Flip-Clock ohne Karten): geaenderte Zeichen klappen oben weg (0-50 %,
+        ease-in) und unten auf (50-100 %, ease-out), wie satoriui/flip-clock."""
+        if p >= 1 or not alt or alt == neu:
+            return self.text(x, y, neu, font, farbe)
+        if len(alt) != len(neu):
+            return self._klappe(x, y, alt, neu, font, farbe, p)
+        for i, (ca_, cn) in enumerate(zip(alt, neu)):
+            xi = x + font.getlength(neu[:i])
+            if ca_ == cn:
+                self.text(xi, y, cn, font, farbe)
+            else:
+                self._klappe(xi, y, ca_, cn, font, farbe, p)
+
+    def _klappe(self, x, y, alt, neu, font, farbe, p):
+        asc, desc = font.getmetrics()
+        breite = int(math.ceil(max(font.getlength(alt), font.getlength(neu)))) + 2
+        def maske(s):
+            m = Image.new("L", (breite, asc + desc))
+            ImageDraw.Draw(m).text((0, asc), s, font=font, fill=255, anchor="ls")
+            return np.asarray(m, np.float32) / 255.0
+        A, N = maske(alt), maske(neu)
+        _, t, _, b = font.getbbox("0", anchor="ls")
+        H = A.shape[0]
+        g = int(round(asc + (t + b) / 2))                   # Scharnier: Mitte der Ziffer
+        zeilen = np.arange(H, dtype=np.float32)
+        cov, hell = np.where((zeilen < g)[:, None], N, A), np.ones(H, np.float32)
+        if p < 0.5:                                          # obere Klappe (alt) faellt nach vorn
+            c = math.cos((p / 0.5) ** 2 * math.pi / 2)
+            if c > 0.02:
+                rein = (zeilen < g) & (zeilen >= g - g * c)
+                quelle = np.clip(g - (g - zeilen) / c, 0, H - 1).astype(int)
+                cov[rein] = A[quelle[rein]]
+                hell[rein] = 0.55 + 0.45 * c
+        else:                                                # untere Klappe (neu) klappt auf
+            q = 1 - (1 - (p - 0.5) / 0.5) ** 2
+            c = math.sin(q * math.pi / 2)
+            if c > 0.02:
+                rein = (zeilen >= g) & (zeilen < g + (H - g) * c)
+                quelle = np.clip(g + (zeilen - g) / c, 0, H - 1).astype(int)
+                cov[rein] = N[quelle[rein]]
+                hell[rein] = 0.55 + 0.45 * c
+        cov = cov * hell[:, None]
+        x0, y0 = int(round(x)), int(round(y)) - asc
+        f = self._feld(x0, y0, x0 + breite, y0 + H)
+        if f is None:
+            return
+        sl, _, _ = f
+        self._ueber(sl, farbe, cov[sl[0].start - y0:sl[0].stop - y0, sl[1].start - x0:sl[1].stop - x0])
+
+    def rolle(self, x, y, alt, neu, font, farbe, p, richtung, hub):
+        """Rollende Ziffern (appica number-field): geaenderte Stellen fahren um hub px,
+        plus = neue von unten, minus = von oben. Stellen von rechts gezaehlt."""
+        if p >= 1 or alt is None or alt == neu:
+            return self.text(x, y, neu, font, farbe)
+        _, t, _, b = font.getbbox("0", anchor="ls")       # Zelle = Ziffernhoehe, wie overflow-hidden
+        clip = (x - 200, y + t - 3, x + font.getlength(neu) + 200, y + b + 3)
+        hub = clip[3] - clip[1]
+        n = max(len(alt), len(neu))
+        alt, neu = alt.rjust(n), neu.rjust(n)
+        breite = font.getlength(neu.strip())
+        x_rechts = x + breite
+        zw = font.getlength("0")                          # Segoe-Ziffern sind gleich breit
+        for i in range(n):
+            xi = x_rechts - (n - i) * zw
+            ca_, cn = alt[i], neu[i]
+            if ca_ == cn:
+                self.text(xi, y, cn, font, farbe)
+                continue
+            for s, dy, al in ((ca_, -richtung * hub * p, 1 - p), (cn, richtung * hub * (1 - p), p)):
+                if s.strip():
+                    self.text(xi, y + dy, s, font, farbe[:3] + (int(farbe[3] * al),), clip=clip)
 
     def bild(self, x0, y0, groesse, r, img, alpha=1.0):
         """Quadratisches Bild (PIL) mit runden Ecken."""
@@ -416,6 +498,35 @@ def a(rgb, alpha):
     return tuple(rgb) + (max(0, min(255, int(alpha))),)
 
 
+def kurve(t, x1, y1, x2, y2):
+    """CSS-cubic-bezier(x1, y1, x2, y2) an der Stelle t (0..1), per Halbierung."""
+    t = max(0.0, min(1.0, t))
+    lo, hi = 0.0, 1.0
+    for _ in range(18):
+        u = (lo + hi) / 2
+        x = 3 * (1 - u) ** 2 * u * x1 + 3 * (1 - u) * u * u * x2 + u ** 3
+        lo, hi = (u, hi) if x < t else (lo, u)
+    u = (lo + hi) / 2
+    return 3 * (1 - u) ** 2 * u * y1 + 3 * (1 - u) * u * u * y2 + u ** 3
+
+
+def anzeige(st):
+    """Grosse Zeit und Untertitel der Pille."""
+    if st["status"] == "aus":
+        return mmss(st["heute_s"]), "heute · Klick startet"
+    if st["faellig"]:
+        return "+" + mmss(-st["rest_s"]), ("Pause vorbei" if st["status"] == "pause" else "Zeit für eine Pause")
+    return mmss(st["rest_s"]), {"arbeit": st["titel"] or "bis zur Pause", "angehalten": "angehalten",
+                                "pause": "Pause"}[st["status"]]
+
+
+def hoehe(ui):
+    """Logische Hoehe, die die Leinwand braucht (Pille/Panel + Songtext-Karte + Schatten)."""
+    m, ly = ui["m"], ui.get("ly", 0.0)
+    h = CH + (EH - CH) * m
+    return M + h + (8 + (LH - 16) * ly if ly > 0.02 else 0) + M
+
+
 def ton(st):
     if st["faellig"]:
         return TOENE["pause" if st["status"] == "pause" else "faellig"]
@@ -431,17 +542,19 @@ def kuerzen(s, font, breite):
 _GRUND = {}   # Schatten + Glas je Ruhelage
 
 
-def zeichnen(st, ui, z, cover=None):
-    """st = Timer.stand(); ui = {m, anker, hover, tab, puls, jetzt, musik}; cover = PIL-Bild.
+def zeichnen(st, ui, z, cover=None, cover_alt=None):
+    """st = Timer.stand(); ui = {m, anker, hover, tab, puls, jetzt, musik, ...}; cover = PIL-Bild.
     Gibt (BGRA, Trefferflaechen) zurueck; Flaechen in Fensterpixeln."""
     S = lambda v: v * z
-    lw = Leinwand(round(S(WW)), round(S(WH)))
+    lw = Leinwand(round(S(WW)), min(round(S(WH)), round(S(hoehe(ui)))))   # nur so hoch wie noetig
     m = ui["m"]
+    ly = ui.get("ly", 0.0)                     # Songtext-Karte 0..1 (Feder, darf ueberschwingen)
     w, h = CW + (EW - CW) * m, CH + (EH - CH) * m
     x0 = M if ui["anker"] == "l" else M + EW - w
     y0 = M
     r = min(h / 2, CH / 2 + (26 - CH / 2) * min(1.0, max(0.0, m)) * 1.0)
     X0, Y0, X1, Y1, R = S(x0), S(y0), S(x0 + w), S(y0 + h), S(r)
+    ty0, kh = y0 + h + 8, (LH - 16) * max(0.0, ly)      # Songtext-Karte haengt unter der Pille
     zonen = []
     hov = ui["hover"]
 
@@ -449,19 +562,28 @@ def zeichnen(st, ui, z, cover=None):
         zonen.append((name,) + tuple(S(v) for v in rect))
         return name == hov
 
+    def gr(name):
+        """Druck-Pop: gedrueckter Knopf schrumpft auf 0.92 und federt ueber 1 zurueck."""
+        return 0.92 + 0.08 * ui.get("dp", 1.0) if ui.get("druck") == name else 1.0
+
     c1, c2 = ton(st)
     puls = ui["puls"]
 
-    # Grund: Schatten, Glas, Lichtkante, Farbschein
-    grund_key = (round(m, 4), ui["anker"], z)
+    # Grund: Schatten, Glas, Lichtkante (+ Songtext-Karte als eigene Insel)
+    grund_key = (round(m, 4), round(ly, 4), ui["anker"], z, lw.h)
     if grund_key in _GRUND:
         lw.a[:] = _GRUND[grund_key]
     else:
-        lw.schatten(X0, Y0 + S(8), X1, Y1 + S(8), R, S(18), (0, 0, 0, 120))
-        lw.schatten(X0, Y0 + S(1), X1, Y1 + S(1), R, S(3), (0, 0, 0, 90))
-        lw.box(X0, Y0, X1, Y1, R, (16, 16, 19, 238))
-        lw.rand(X0, Y0, X1, Y1, R, 0.24, 0.05, dicke=max(1.0, S(0.8)))
-        if m in (0.0, 1.0):                       # nur Ruhelagen merken
+        flaechen = [(X0, Y0, X1, Y1, R)]
+        if ly > 0.02:
+            flaechen.append((X0, S(ty0), X1, S(ty0 + kh), S(min(22, kh / 2))))
+        for f in flaechen:
+            lw.schatten(f[0], f[1] + S(8), f[2], f[3] + S(8), f[4], S(18), (0, 0, 0, 120))
+            lw.schatten(f[0], f[1] + S(1), f[2], f[3] + S(1), f[4], S(3), (0, 0, 0, 90))
+        for f in flaechen:
+            lw.box(*f, (16, 16, 19, 238))
+            lw.rand(*f, 0.24, 0.05, dicke=max(1.0, S(0.8)))
+        if m in (0.0, 1.0) and ly in (0.0, 1.0):  # nur Ruhelagen merken
             _GRUND[grund_key] = lw.a.copy()
     ringx, ringy = (x0 + CH / 2, y0 + CH / 2) if m < 0.5 else (x0 + 20 + 40, y0 + 20 + 40)
     if st["status"] != "aus":
@@ -471,16 +593,23 @@ def zeichnen(st, ui, z, cover=None):
                                                             else st["ziel_min"]) * 60)
     if st["status"] == "aus":
         anteil = 0.0
+    gross, klein = anzeige(st)
+    fp, gross_alt = ui.get("fp", 1.0), ui.get("gross_alt")
 
-    if st["status"] == "aus":
-        gross, klein = mmss(st["heute_s"]), "heute · Klick startet"
-    elif st["faellig"]:
-        gross = "+" + mmss(-st["rest_s"])
-        klein = "Pause vorbei" if st["status"] == "pause" else "Zeit für eine Pause"
-    else:
-        gross = mmss(st["rest_s"])
-        klein = {"arbeit": st["titel"] or "bis zur Pause", "angehalten": "angehalten",
-                 "pause": "Pause"}[st["status"]]
+    def cover_bild(kx, ky, kg, rad, alpha):
+        """Cover-Wechsel wie bjork-now-playing-card: altes gleitet raus, neues 24 px herein, 0.92 -> 1."""
+        cp, d = ui.get("cp", 1.0), ui.get("cdir", 1)
+        teile = [(cover, cp, 24 * d * (1 - cp))]
+        if cp < 1 and cover_alt is not None:
+            teile.insert(0, (cover_alt, 1 - cp, -24 * d * cp))
+        for bild_, al, dx in teile:
+            sk = 0.92 + 0.08 * al
+            g_ = kg * sk
+            bx_, by_ = kx + (kg - g_) / 2 + dx * kg / 72, ky + (kg - g_) / 2
+            if bild_ is not None:
+                lw.bild(S(bx_), S(by_), S(g_), S(rad * sk), bild_, alpha * al)
+            else:
+                lw.box(S(bx_), S(by_), S(bx_ + g_), S(by_ + g_), S(rad * sk), a(TOENE["arbeit"][0], 60 * alpha * al))
 
     # --- zu ---
     ca = max(0.0, 1 - m * 2.6)
@@ -490,36 +619,58 @@ def zeichnen(st, ui, z, cover=None):
         if st["faellig"] and puls:
             lw.ring(S(cx), S(cy), S(18), S(1.6), 1.0, c1, c2, (0, 0, 0, 0), ca * puls * 0.7)
         tx = x0 + CH + 2
-        lw.text(S(tx), S(y0 + 26), gross, schrift(round(S(18)), 640), a(WEISS, 255 * ca))
+        lw.flip(S(tx), S(y0 + 26), gross_alt, gross, schrift(round(S(18)), 640), a(WEISS, 255 * ca), fp)
         fk = schrift(round(S(11)), 460)
         mu = ui["musik"]
         hv = ui.get("hv", 0.0) if mu.get("verbunden") else 0.0     # Maus ueber der Pille
         frei = w - CH - 46 - (44 + 70 * hv if mu.get("verbunden") else 0)
-        if ui.get("zeile"):
-            lw.text(S(tx), S(y0 + 40), kuerzen(ui["zeile"], fk, S(frei)), fk, a(WEISS, 225 * ca))
-        else:
-            lw.text(S(tx), S(y0 + 40), kuerzen(klein, fk, S(frei)), fk, a(GRAU, 255 * ca))
+        lw.text(S(tx), S(y0 + 40), kuerzen(klein, fk, S(frei)), fk, a(GRAU, 255 * ca))
         if mu.get("verbunden"):
             # beim Hover rueckt das Cover nach links, zurueck/weiter blenden daneben ein
             kx, ky, kg = x0 + w - 86 - 34 * hv, y0 + 9, 30
             an = zone("cover", kx - 4, ky - 4, kx + kg + 4, ky + kg + 4)
             spielt = mu.get("spielt")
-            if cover is not None:
-                lw.bild(S(kx), S(ky), S(kg), S(7), cover, ca * (1.0 if spielt and not an else 0.45))
-            else:
-                lw.box(S(kx), S(ky), S(kx + kg), S(ky + kg), S(7), a(TOENE["arbeit"][0], 60 * ca))
+            g_ = gr("cover")
+            cover_bild(kx + kg * (1 - g_) / 2, ky + kg * (1 - g_) / 2, kg * g_, 7,
+                       ca * (1.0 if spielt and not an else 0.45))
             if an or not spielt or cover is None:
                 musik_symbol(lw, S, kx + kg / 2, ky + kg / 2, 5.5, spielt, a(WEISS, 235 * ca))
             if hv > 0.02:
                 for name, sym_, sx in (("zurueck", ZURUECK, kx - 17), ("weiter", WEITER, kx + kg + 17)):
                     an = zone(name, sx - 13, ky, sx + 13, ky + kg) if hv > 0.5 else False
-                    lw.kreis(S(sx), S(ky + kg / 2), S(13), a(WEISS, (36 if an else 0) * ca * hv))
-                    lw.text(S(sx), S(ky + kg / 2), sym_, symbolschrift(round(S(10))),
+                    lw.kreis(S(sx), S(ky + kg / 2), S(13 * gr(name)), a(WEISS, (36 if an else 0) * ca * hv))
+                    lw.text(S(sx), S(ky + kg / 2), sym_, symbolschrift(round(S(10 * gr(name)))),
                             a(WEISS if an else (200, 200, 206), 255 * ca * hv), "mm")
         bx, by = x0 + w - 24, y0 + CH / 2
         an = zone("aufklappen", bx - 18, by - 18, bx + 18, by + 18)
-        lw.kreis(S(bx), S(by), S(13), a(WEISS, (40 if an else 18) * ca))
+        lw.kreis(S(bx), S(by), S(13 * gr("aufklappen")), a(WEISS, (40 if an else 18) * ca))
         lw.text(S(bx), S(by), ZU, symbolschrift(round(S(10))), a(WEISS if an else GRAU, 255 * ca), "mm")
+
+    # --- Songtext-Karte (Apple-Music-Stil): eigene Insel unter der Pille, immer ausgeklappt ---
+    mu = ui["musik"]
+    if ly > 0.02 and mu.get("verbunden"):
+        ty1 = ty0 + kh
+        sa = max(0.0, min(1.0, (ly - 0.3) / 0.5))
+        L_, R_ = x0 + 18, x0 + w - 18
+        clip = (S(x0), S(ty0 + 4), S(x0 + w), S(ty1 - 4))
+        zeilen, idx = ui.get("zeilen") or [], ui.get("idx", -1)
+        mitte = ty0 + 44
+        gs = 14 + 2 * min(1.0, max(0.0, m))               # breitere Karte = groessere Schrift
+        if ui.get("text_status") != "da" or not zeilen:
+            hinweis = {"laedt": "• • •"}.get(ui.get("text_status"), "Kein Songtext gefunden")
+            lw.text(S(L_), S(mitte), hinweis, schrift(round(S(gs)), 640), a(WEISS, 110 * sa), clip=clip)
+        else:
+            zp, sprung = ui.get("zp", 1.0), ui.get("sprung", 0)
+            lz = 27 + 2 * min(1.0, max(0.0, m))           # Zeilenabstand
+            for i in range(max(0, idx - 2), min(len(zeilen), idx + 4)):
+                d = (i - idx) + (1 - zp) * sprung         # Lage relativ zur laufenden Zeile, gefedert
+                nah = max(0.0, 1 - abs(d))
+                al = max(0.0, 1 + d * 0.75) * 0.32 if d < 0 else max(0.0, 1 - d * 0.28) * 0.36
+                al = al + (1 - al) * nah
+                txt = zeilen[i] or "• • •"
+                f_ = schrift(round(S(gs + 2 * nah)), 700)
+                lw.text(S(L_), S(mitte + d * lz), kuerzen(txt, f_, S(R_ - L_)), f_,
+                        a(WEISS, 255 * al * sa), blur=S(min(3.0, abs(d) * 1.4)), clip=clip)
 
     # --- auf ---
     ea0 = max(0.0, min(1.0, (m - 0.3) / 0.4))
@@ -529,12 +680,14 @@ def zeichnen(st, ui, z, cover=None):
         """Zeile blendet erst ein, wenn die wachsende Pille sie schon umschliesst."""
         return ea0 * max(0.0, min(1.0, (y0 + h - unten - 6) / 18))
     if ea > 0:
+        y0 += 10 * (1 - ea0)                # Inhalt poppt beim Aufklappen 10 px nach oben ein
         P = 20
         L, Rr = x0 + P, x0 + w - P
         ein = lambda v: v * ea
         ea = reihe(y0 + P + 80)
         cx, cy = x0 + P + 40, y0 + P + 40
-        lw.ring(S(cx), S(cy), S(36), S(7), anteil, c1, c2, a(WEISS, 22), ea)
+        g_ = gr("ring")
+        lw.ring(S(cx), S(cy), S(36 * g_), S(7 * g_), anteil, c1, c2, a(WEISS, 22), ea)
         if st["faellig"] and puls:
             lw.ring(S(cx), S(cy), S(45), S(2), 1.0, c1, c2, (0, 0, 0, 0), ea * puls * 0.7)
         if st["status"] in ("arbeit", "pause"):
@@ -544,56 +697,64 @@ def zeichnen(st, ui, z, cover=None):
             lw.text(S(cx + 2), S(cy), "▶", schrift_symbol(round(S(19))), a(WEISS, ein(220)), "mm")
         zone("ring", cx - 36, cy - 36, cx + 36, cy + 36)
         tx = x0 + P + 96
-        lw.text(S(tx), S(y0 + P + 46), gross, schrift(round(S(40)), 620), a(WEISS, ein(255)))
+        lw.flip(S(tx), S(y0 + P + 46), gross_alt, gross, schrift(round(S(40)), 620), a(WEISS, ein(255)), fp)
         fk = schrift(round(S(12)), 460)
         lw.text(S(tx + 2), S(y0 + P + 68), kuerzen(klein, fk, S(Rr - tx - 40)), fk, a(GRAU, ein(255)))
         bx, by = Rr - 14, y0 + P + 14
         an = zone("zuklappen", bx - 16, by - 16, bx + 16, by + 16)
-        lw.kreis(S(bx), S(by), S(14), a(WEISS, ein(42 if an else 18)))
+        lw.kreis(S(bx), S(by), S(14 * gr("zuklappen")), a(WEISS, ein(42 if an else 18)))
         lw.text(S(bx), S(by), AUF, symbolschrift(round(S(10))), a(WEISS if an else GRAU, ein(255)), "mm")
 
-        # Fokus | Pause
+        # Fokus | Pause: Auswahl gleitet gefedert hinueber
         ea = reihe(y0 + 144)
         sy0, sy1 = y0 + 112, y0 + 144
         lw.box(S(L), S(sy0), S(Rr), S(sy1), S(11), a(WEISS, ein(14)))
         mitte = (L + Rr) / 2
+        ix = L + (mitte - L) * ui.get("tp", 1.0 if ui["tab"] == "pause" else 0.0)
+        lw.box(S(ix + 3), S(sy0 + 3), S(ix + mitte - L - 3), S(sy1 - 3), S(8), a((58, 58, 64), ein(255)))
+        lw.rand(S(ix + 3), S(sy0 + 3), S(ix + mitte - L - 3), S(sy1 - 3), S(8), 0.16 * ea, 0.03 * ea)
         for name, text, lx0, lx1 in (("tab_fokus", "Fokus", L, mitte), ("tab_pause", "Pause", mitte, Rr)):
             an = zone(name, lx0, sy0, lx1, sy1)
             aktiv = ui["tab"] == name[4:]
-            if aktiv:
-                lw.box(S(lx0 + 3), S(sy0 + 3), S(lx1 - 3), S(sy1 - 3), S(8), a((58, 58, 64), ein(255)))
-                lw.rand(S(lx0 + 3), S(sy0 + 3), S(lx1 - 3), S(sy1 - 3), S(8), 0.16 * ea, 0.03 * ea)
             lw.text(S((lx0 + lx1) / 2), S((sy0 + sy1) / 2 + 0.5), text, schrift(round(S(12.5)), 600),
                     a(WEISS if aktiv or an else GRAU, ein(255)), "mm")
 
-        # Zeit einstellen
+        # Zeit einstellen: rollende Ziffern, Ziehen ueber der Zahl scrubbt, Chip-Auswahl gleitet
         ea = reihe(y0 + 200)
         pause_tab = ui["tab"] == "pause"
         wert = st["pause_min"] if pause_tab else st["ziel_min"]
         zy = y0 + 182
         for name, sym_, bx in (("minus", MINUS, L + 18), ("plus", PLUS, L + 150)):
             an = zone(name, bx - 18, zy - 18, bx + 18, zy + 18)
-            lw.kreis(S(bx), S(zy), S(17), a(WEISS, ein(44 if an else 20)))
-            lw.text(S(bx), S(zy), sym_, symbolschrift(round(S(11))), a(WEISS, ein(230)), "mm")
-        zone("zeit", L + 38, zy - 20, L + 130, zy + 20)
+            lw.kreis(S(bx), S(zy), S(17 * gr(name)), a(WEISS, ein(44 if an else 20)))
+            lw.text(S(bx), S(zy), sym_, symbolschrift(round(S(11 * gr(name)))), a(WEISS, ein(230)), "mm")
+        an = zone("zeit", L + 38, zy - 20, L + 130, zy + 20)
+        if an or ui.get("scrub"):
+            lw.box(S(L + 40), S(zy - 18), S(L + 128), S(zy + 18), S(9), a(WEISS, ein(16 if ui.get("scrub") else 8)))
         zf, ef = schrift(round(S(26)), 620), schrift(round(S(12)), 500)
         zs, es = str(wert), " min"
         gesamt = zf.getlength(zs) + ef.getlength(es)
         zx = S(L + 84) - gesamt / 2
-        lw.text(zx, S(zy + 9), zs, zf, a(WEISS, ein(255)))
+        lw.rolle(zx, S(zy + 9), ui.get("wert_alt"), zs, zf, a(WEISS, ein(255)), ui.get("rp", 1.0),
+                 ui.get("rdir", 1), S(22))
         lw.text(zx + zf.getlength(zs), S(zy + 9), es, ef, a(GRAU, ein(255)))
         chips = (5, 10, 15) if pause_tab else (25, 50, 90)
         cw_, gap = 40, 6
-        cx_ = Rr - 3 * cw_ - 2 * gap
+        cx0 = Rr - 3 * cw_ - 2 * gap
         tc1 = TOENE["pause" if pause_tab else "arbeit"][0]
-        for v in chips:
+        cal = ui.get("cal", 1.0 if wert in chips else 0.0)
+        if cal > 0.01:
+            hx = cx0 + ui.get("cpos", chips.index(wert) if wert in chips else 1) * (cw_ + gap)
+            lw.box(S(hx), S(zy - 15), S(hx + cw_), S(zy + 15), S(9), a(tc1, ein(64 * min(1.0, cal))))
+        for i, v in enumerate(chips):
+            cx_ = cx0 + i * (cw_ + gap)
             an = zone(f"chip:{v}", cx_, zy - 15, cx_ + cw_, zy + 15)
             gewaehlt = v == wert
-            fuell = a(tc1, ein(64)) if gewaehlt else a(WEISS, ein(30 if an else 14))
-            lw.box(S(cx_), S(zy - 15), S(cx_ + cw_), S(zy + 15), S(9), fuell)
-            lw.text(S(cx_ + cw_ / 2), S(zy + 0.5), str(v), schrift(round(S(12.5)), 600),
+            if not gewaehlt:
+                lw.box(S(cx_), S(zy - 15), S(cx_ + cw_), S(zy + 15), S(9), a(WEISS, ein(30 if an else 14)))
+            g_ = gr(f"chip:{v}")
+            lw.text(S(cx_ + cw_ / 2), S(zy + 0.5), str(v), schrift(round(S(12.5 * g_)), 600),
                     a(WEISS if gewaehlt or an else GRAU, ein(255)), "mm")
-            cx_ += cw_ + gap
 
         # Hauptknopf + Stopp
         ea = reihe(y0 + 258)
@@ -607,18 +768,21 @@ def zeichnen(st, ui, z, cover=None):
             hell = 1.12 if an else 1.0
             fuell = a(tuple(min(255, int(c * hell)) for c in tc), ein(255))
             schrift_farbe = a((8, 8, 10) if art == "arbeit" else WEISS, ein(255))
-        lw.box(S(L), S(by0), S(Rr - 54), S(by1), S(14), fuell)
-        lw.rand(S(L), S(by0), S(Rr - 54), S(by1), S(14), 0.22 * ea, 0.0)
-        lw.text(S((L + Rr - 54) / 2), S((by0 + by1) / 2 + 0.5), text, schrift(round(S(14)), 640),
+        g_ = gr("primaer")
+        bw, bh = (Rr - 54 - L) * (1 - g_) / 2, (by1 - by0) * (1 - g_) / 2
+        lw.box(S(L + bw), S(by0 + bh), S(Rr - 54 - bw), S(by1 - bh), S(14), fuell)
+        lw.rand(S(L + bw), S(by0 + bh), S(Rr - 54 - bw), S(by1 - bh), S(14), 0.22 * ea, 0.0)
+        lw.text(S((L + Rr - 54) / 2), S((by0 + by1) / 2 + 0.5), text, schrift(round(S(14 * g_)), 640),
                 schrift_farbe, "mm")
         sx, sy = Rr - 21, (by0 + by1) / 2
         aktiv = st["status"] != "aus"
         an = zone("stopp", sx - 21, sy - 21, sx + 21, sy + 21) and aktiv
-        lw.kreis(S(sx), S(sy), S(21), a(WEISS, ein(40 if an else 18)))
-        lw.box(S(sx - 6), S(sy - 6), S(sx + 6), S(sy + 6), S(2.5),
+        g_ = gr("stopp")
+        lw.kreis(S(sx), S(sy), S(21 * g_), a(WEISS, ein(40 if an else 18)))
+        lw.box(S(sx - 6 * g_), S(sy - 6 * g_), S(sx + 6 * g_), S(sy + 6 * g_), S(2.5),
                a((255, 105, 97) if an else (WEISS if aktiv else GRAU), ein(235 if aktiv else 90)))
 
-        # Heute
+        # Heute: gestufte Leiste (staged-progress-bar) — Pillen mit 2 px Luecke, fuellt sich beim Oeffnen
         ea = reihe(y0 + 298)
         hy = y0 + 282
         fk = schrift(round(S(11)), 500)
@@ -633,17 +797,19 @@ def zeichnen(st, ui, z, cover=None):
         segs = st["segmente"]
         von = min([6.0] + [(s - h0) / 3600 for s, _, _ in segs])
         bis = max([22.0, (ui["jetzt"] - h0) / 3600 + 0.5] + [(e - h0) / 3600 for _, e, _ in segs])
-        sk = lambda t: L + ((t - h0) / 3600 - von) / (bis - von) * (Rr - L)
+        lp = kurve(ui.get("lp", 1.0), 0.22, 1, 0.36, 1)
+        sk = lambda t: L + (((t - h0) / 3600 - von) / (bis - von) * (Rr - L)) * lp
         for s, e, art_ in segs:
-            xa, xb = sk(s), max(sk(e), sk(s) + 1.5)
-            lw.box(S(xa), S(tl0), S(xb), S(tl1), S(2), a(TOENE["pause" if art_ == "pause" else "arbeit"][0],
+            xa, xb = sk(s), max(sk(e), sk(s) + 3)
+            if xb - xa > 5:
+                xa, xb = xa + 1, xb - 1
+            lw.box(S(xa), S(tl0), S(xb), S(tl1), S(3), a(TOENE["pause" if art_ == "pause" else "arbeit"][0],
                                                           ein(255)))
         xn = sk(ui["jetzt"])
-        lw.box(S(xn - 0.75), S(tl0 - 3), S(xn + 0.75), S(tl1 + 3), S(0.75), a(WEISS, ein(200)))
+        lw.box(S(xn - 1), S(tl0 - 3), S(xn + 1), S(tl1 + 3), S(1), a(WEISS, ein(220)))
 
-        # Musik
+        # Musik (bjork-now-playing-card): Cover gleitet beim Songwechsel, Titel rollt, Knoepfe druecken ein
         ea = reihe(y0 + EH - 24)   # letzte Zeile: voll sichtbar, sobald ganz offen
-        mu = ui["musik"]
         ky0, ky1 = y0 + 312, y0 + 388
         lw.box(S(L), S(ky0), S(Rr), S(ky1), S(16), a(WEISS, ein(12)))
         lw.rand(S(L), S(ky0), S(Rr), S(ky1), S(16), 0.10 * ea, 0.0)
@@ -654,36 +820,41 @@ def zeichnen(st, ui, z, cover=None):
                     schrift(round(S(11)), 460), a(GRAU, ein(255)))
         else:
             kx, kyy, kg = L + 12, ky0 + 12, 52
-            if cover is not None:
-                lw.bild(S(kx), S(kyy), S(kg), S(10), cover, ea)
-            else:
-                lw.box(S(kx), S(kyy), S(kx + kg), S(kyy + kg), S(10), a(TOENE["arbeit"][0], ein(60)))
+            cover_bild(kx, kyy, kg, 10, ea)
             tx = kx + kg + 12
             ft, fa = schrift(round(S(13)), 620), schrift(round(S(11.5)), 460)
             breite = S(Rr - 120 - tx)
-            lw.text(S(tx), S(ky0 + 30), kuerzen(mu.get("titel") or "–", ft, breite), ft, a(WEISS, ein(255)))
-            if ui.get("zeile"):
-                lw.text(S(tx), S(ky0 + 46), kuerzen(ui["zeile"], fa, S(Rr - 16 - tx)), fa, a(WEISS, ein(235)))
-            else:
-                lw.text(S(tx), S(ky0 + 46), kuerzen(mu.get("kuenstler") or "", fa, breite), fa, a(GRAU, ein(255)))
+            tp_ = kurve(ui.get("sp", 1.0), 0.23, 1, 0.32, 1)
+            kclip = (S(tx - 2), S(ky0 + 14), S(Rr - 110), S(ky0 + 52))
+            alt_ = ui.get("song_alt")
+            for titel, kuenstler, dy, al in ((alt_ or [None, None])[0], (alt_ or [None, None])[1], -6 * tp_, 1 - tp_), \
+                                            (mu.get("titel") or "–", mu.get("kuenstler") or "", 6 * (1 - tp_), tp_):
+                if titel is None or al <= 0.01:
+                    continue
+                lw.text(S(tx), S(ky0 + 30 + dy), kuerzen(titel, ft, breite), ft, a(WEISS, ein(255 * al)), clip=kclip)
+                lw.text(S(tx), S(ky0 + 46 + dy), kuerzen(kuenstler, fa, breite), fa, a(GRAU, ein(255 * al)),
+                        clip=kclip)
             my = ky0 + 30
             for name, sx in (("zurueck", Rr - 98), ("playpause", Rr - 62), ("weiter", Rr - 26)):
                 an = zone(name, sx - 17, my - 17, sx + 17, my + 17)
+                g_ = gr(name)
                 if name == "playpause":
-                    lw.kreis(S(sx), S(my), S(16), a(WEISS, ein(255 if an else 232)))
-                    musik_symbol(lw, S, sx, my, 5.5, mu.get("spielt"), a((12, 12, 14), ein(255)))
+                    lw.kreis(S(sx), S(my), S(16 * g_), a(WEISS, ein(255 if an else 232)))
+                    musik_symbol(lw, S, sx, my, 5.5 * g_, mu.get("spielt"), a((12, 12, 14), ein(255)))
                 else:
-                    lw.kreis(S(sx), S(my), S(14), a(WEISS, ein(36 if an else 0)))
-                    lw.text(S(sx), S(my), ZURUECK if name == "zurueck" else WEITER, symbolschrift(round(S(11))),
-                            a(WEISS if an else (200, 200, 206), ein(255)), "mm")
+                    lw.kreis(S(sx), S(my), S(14 * g_), a(WEISS, ein(36 if an else 0)))
+                    lw.text(S(sx), S(my), ZURUECK if name == "zurueck" else WEITER,
+                            symbolschrift(round(S(11 * g_))), a(WEISS if an else (200, 200, 206), ein(255)), "mm")
             # Lautstaerke: Trefferflaeche = exakte Reglerbreite, damit Klick-x direkt der Wert ist
             vx0, vx1, vy = tx, Rr - 48, ky0 + 64
-            mx, text_an = Rr - 26, ui.get("text_an")          # Songtext ein/aus
+            mx, text_an, g_ = Rr - 26, ui.get("text_an"), gr("text")   # Songtext ein/aus
             an = zone("text", mx - 14, vy - 12, mx + 14, vy + 12)
-            lw.kreis(S(mx), S(vy), S(12), a(TOENE["arbeit"][0] if text_an else WEISS,
-                                            ein(70 if text_an else (36 if an else 0))))
-            lw.text(S(mx), S(vy), MIKRO, symbolschrift(round(S(11))),
-                    a(WEISS if text_an or an else (200, 200, 206), ein(255)), "mm")
+            if text_an:
+                lw.kreis(S(mx), S(vy), S(12 * g_), a(WEISS, ein(255 if an else 238)))
+            else:
+                lw.kreis(S(mx), S(vy), S(12 * g_), a(WEISS, ein(36 if an else 0)))
+            lw.text(S(mx), S(vy), MIKRO, symbolschrift(max(1, round(S(11 * g_)))),
+                    a((12, 12, 14) if text_an else (WEISS if an else (200, 200, 206)), ein(255)), "mm")
             an = zone("lautstaerke", vx0, vy - 10, vx1, vy + 10)
             v = mu.get("lautstaerke")
             lw.box(S(vx0), S(vy - 2), S(vx1), S(vy + 2), S(2), a(WEISS, ein(30)))
@@ -780,14 +951,20 @@ def lrc_zeilen(lrc):
     return sorted(zeilen)
 
 
-def zeile_bei(zeilen, t):
-    """Zeile, die zur Sekunde t laeuft, sonst None."""
-    aktuell = None
-    for z, text in zeilen:
+def index_bei(zeilen, t):
+    """Index der Zeile, die zur Sekunde t laeuft; -1 vor der ersten."""
+    i = -1
+    for j, (z, _) in enumerate(zeilen):
         if z > t:
             break
-        aktuell = text
-    return aktuell or None
+        i = j
+    return i
+
+
+def zeile_bei(zeilen, t):
+    """Zeile, die zur Sekunde t laeuft, sonst None (auch in Instrumental-Luecken)."""
+    i = index_bei(zeilen, t)
+    return (zeilen[i][1] or None) if i >= 0 else None
 
 
 def songtext_laden(titel, kuenstler, dauer):
@@ -819,6 +996,7 @@ class Spotify:
         self.ws, self.stand, self.cover, self._cover_url = None, {"verbunden": False}, None, None
         self._pos_t = time.time()
         self.text_an, self.text, self._text_fuer = False, [], None     # Songtext: an/aus, Zeilen, fuer welchen Song
+        self.text_status = "keiner"                                     # laedt | da | keiner
 
     def verbunden(self, ws):
         self.ws = ws
@@ -873,18 +1051,23 @@ class Spotify:
         song = (self.stand.get("titel"), self.stand.get("kuenstler"))
         if not self.text_an or not song[0] or song == self._text_fuer:
             return
-        self._text_fuer, self.text = song, []
+        self._text_fuer, self.text, self.text_status = song, [], "laedt"
 
         def holen():
             zeilen = songtext_laden(song[0], song[1], self.stand.get("dauer"))
             if self._text_fuer == song:
-                self.text = zeilen
+                self.text, self.text_status = zeilen, ("da" if zeilen else "keiner")
         threading.Thread(target=holen, daemon=True).start()
+
+    def index(self):
+        """Index der laufenden Songtextzeile (-1 davor oder ohne Text)."""
+        t = self.position()
+        return index_bei(self.text, t + 0.3) if self.text_an and self.text and t is not None else -1
 
     def zeile(self):
         """Aktuelle Songtextzeile oder None (aus, nicht gefunden, Instrumental)."""
-        t = self.position()
-        return zeile_bei(self.text, t + 0.3) if self.text_an and self.text and t is not None else None
+        i = self.index()
+        return (self.text[i][1] or None) if i >= 0 else None
 
     def befehl(self, cmd, wert=None):
         if cmd not in self.BEFEHLE or not self.ws:
@@ -1053,8 +1236,22 @@ class App:
         self.spotify.text_umschalten(self.cfg.get("songtext", False))
         self.letzter_stand = self.timer.stand()
 
-        self.feder, self.anker, self.tab = Feder(), "r", "fokus"
+        # Aufklappen mit mehr Schwung (bounce ~0.4 wie die Dynamic Island von aghasisahakyan1)
+        self.feder, self.anker, self.tab = Feder(daempfung=0.6), "r", "fokus"
         self.hfeder = Feder(k=500.0, daempfung=1.0)        # Hover-Einblendung der Musikknoepfe
+        # Songtext: Karte (federt auf), Zeilenwechsel (Pop)
+        self.lfeder, self.zfeder = Feder(k=300.0, daempfung=0.6), Feder(k=320.0, daempfung=0.62)
+        self.tfeder = Feder(k=420.0, daempfung=0.7)         # Fokus|Pause-Auswahl gleitet
+        self.cfeder, self.cafeder = Feder(k=420.0, daempfung=0.7), Feder(k=500.0, daempfung=1.0)  # Chip: Lage 0..1, Sicht
+        self.dfeder = Feder(k=650.0, daempfung=0.45)        # Druck-Pop des geklickten Knopfs
+        self.zfeder.x = self.zfeder.ziel = self.dfeder.x = self.dfeder.ziel = 1.0
+        self.federn = (self.feder, self.hfeder, self.lfeder, self.zfeder, self.tfeder, self.cfeder, self.cafeder,
+                       self.dfeder)
+        self._idx, self._sprung, self._druck_zone, self.anim = -1, 0, None, {}
+        # zuletzt gezeigte Werte; aendern sie sich, startet die passende Animation
+        self._gross = self._wert = self._song = self._cover = None
+        self._gross_alt = self._wert_alt = self._song_alt = self._cover_alt = None
+        self._rdir, self._cdir = 1, 1
         self.hover, self.zonen, self._schluessel = None, [], None
         self._klang, self._druck, self._zu_job, self._t = False, None, None, time.perf_counter()
 
@@ -1100,7 +1297,8 @@ class App:
 
     def _platzieren(self):
         ox, oy = self._versatz()
-        self.top.geometry(f"{round(WW * self.z)}x{round(WH * self.z)}+{self.px - ox}+{self.py - oy}")
+        # nur verschieben: die Groesse setzt zeigen() passend zur Leinwand
+        self.top.geometry(f"+{self.px - ox}+{self.py - oy}")
 
     def aufklappen(self, auf=True):
         if auf and self.feder.ziel == 0:
@@ -1110,6 +1308,7 @@ class App:
             st = self.timer.stand()
             self.tab = "pause" if st["status"] == "pause" or (st["faellig"] and st["status"] == "arbeit") \
                 else "fokus"
+            self._start("leiste", 0.5)                        # Tagesleiste fuellt sich auf
         self.feder.ziel = 1.0 if auf else 0.0
         self._zu_abbrechen()
 
@@ -1151,7 +1350,19 @@ class App:
         else:
             self.ausfuehren({"aktion": "start"})
 
+    def _start(self, name, dauer):
+        self.anim[name] = (time.perf_counter(), dauer)
+
+    def _p(self, name):
+        """Fortschritt 0..1 einer Zeit-Animation (1 = fertig oder nie gestartet)."""
+        t0, dauer = self.anim.get(name, (0.0, 1.0))
+        return min(1.0, (time.perf_counter() - t0) / dauer)
+
     def _klick(self, zone):
+        if zone:
+            self._druck_zone, self.dfeder.x, self.dfeder.v = zone, 0.0, 0.0   # Knopf gibt nach, federt zurueck
+        if zone in ("weiter", "zurueck"):
+            self._cdir = -1 if zone == "zurueck" else 1
         if zone == "text":
             self.spotify.text_umschalten()
             self.cfg["songtext"] = self.spotify.text_an
@@ -1234,15 +1445,24 @@ class App:
             self.spotify.befehl("lautstaerke", v)
 
     def _druecken(self, e):
-        if self._treffer(e.x, e.y) == "lautstaerke":
+        zone = self._treffer(e.x, e.y)
+        if zone == "lautstaerke":
             self._druck = "regler"
             self._laut_aus_x(e.x, sofort=True)
+            return
+        if zone == "zeit":                                  # Zahl ziehen = scrubben (duration-picker)
+            wert = self.timer.pause_min if self.tab == "pause" else self.timer.ziel_min
+            self._druck = ("zeit", e.x, wert)
             return
         self._druck = (e.x_root, e.y_root, self.px, self.py, False)
 
     def _ziehen(self, e):
         if self._druck == "regler":
             return self._laut_aus_x(e.x)
+        if self._druck and self._druck[0] == "zeit":
+            _, x0, wert = self._druck
+            schritt = 1 if self.tab == "pause" else 5
+            return self._zeit_setzen(wert + round((e.x - x0) / (6 * self.z)) * schritt, self.tab)
         if not self._druck:
             return
         x0, y0, px, py, gezogen = self._druck
@@ -1257,6 +1477,8 @@ class App:
         d, self._druck = self._druck, None
         if d == "regler":
             self._laut_aus_x(e.x, sofort=True)
+        elif d and d[0] == "zeit":
+            pass
         elif d and d[4]:
             self.cfg["px"], self.cfg["py"] = self.px, self.py
             speichere_config(self.cfg)
@@ -1309,16 +1531,62 @@ class App:
             self.im_takt.get_nowait()()
             if self._ende:
                 return
-        self.feder.schritt(dt)
-        self.hfeder.schritt(dt)
+        sp = self.spotify
+        self.lfeder.ziel = 1.0 if sp.text_an and sp.stand.get("verbunden") else 0.0
+        idx = sp.index()
+        if idx != self._idx:                               # neue Zeile: Karte rollt gefedert weiter
+            self._sprung = max(-2, min(2, idx - self._idx)) if self._idx >= 0 else 1
+            self._idx, self.zfeder.x, self.zfeder.v = idx, 0.0, 0.0
         st = self.timer.stand()
+        self._aenderungen(st)
+        for f in self.federn:
+            f.schritt(dt)
         self.letzter_stand = dict(st, spotify=self.spotify.fuer_claude())
         if st["faellig"] and not self._klang:
             winsound.MessageBeep(winsound.MB_ICONASTERISK)
             self._klang = True
         self._malen()
-        schnell = not (self.feder.ruhig and self.hfeder.ruhig)
+        schnell = not all(f.ruhig for f in self.federn) or any(self._p(n) < 1 for n in self.anim)
         self.root.after(15 if schnell else (50 if st["faellig"] else 200), self._takt)
+
+    def _aenderungen(self, st):
+        """Vergleicht Gezeigtes mit dem Stand und startet Flip, Rollen, Gleiten, Songwechsel."""
+        gross = anzeige(st)[0]
+        if gross != self._gross:
+            if self._gross is not None:
+                self._gross_alt = self._gross
+                self._start("flip", 0.6)
+            self._gross = gross
+        pause_tab = self.tab == "pause"
+        self.tfeder.ziel = 1.0 if pause_tab else 0.0
+        wert = self.timer.pause_min if pause_tab else self.timer.ziel_min
+        if (self.tab, wert) != self._wert:
+            gleich = bool(self._wert) and self._wert[0] == self.tab
+            if gleich:
+                self._wert_alt, self._rdir = str(self._wert[1]), (1 if wert > self._wert[1] else -1)
+                self._start("rolle", 0.22)
+            else:
+                self._wert_alt = None
+            chips = (5, 10, 15) if pause_tab else (25, 50, 90)
+            if wert in chips:
+                self.cfeder.ziel, self.cafeder.ziel = chips.index(wert) / 2, 1.0
+                if not gleich or self.cafeder.x < 0.05:   # neu auftauchen: springen statt gleiten
+                    self.cfeder.x, self.cfeder.v = self.cfeder.ziel, 0.0
+            else:
+                self.cafeder.ziel = 0.0
+            self._wert = (self.tab, wert)
+        sp = self.spotify
+        song = (sp.stand.get("titel"), sp.stand.get("kuenstler"))
+        if song != self._song:
+            if self._song and self._song[0] and song[0]:
+                self._song_alt = list(self._song)
+                self._start("song", 0.22)
+            self._song = song
+        if sp.cover is not None and sp.cover is not self._cover:
+            if self._cover is not None:
+                self._cover_alt = self._cover
+                self._start("cover", 0.32)
+            self._cover = sp.cover
 
     def _malen(self):
         st = self.timer.stand()
@@ -1327,18 +1595,27 @@ class App:
         ui = {"m": self.feder.x, "anker": self.anker, "hover": self.hover, "tab": self.tab,
               "puls": round(puls, 2), "jetzt": time.time() // 60 * 60,
               "musik": sp.stand, "cover_da": sp.cover is not None, "hv": round(self.hfeder.x, 3),
-              "text_an": sp.text_an, "zeile": sp.zeile()}
+              "text_an": sp.text_an, "ly": round(self.lfeder.x, 3), "zp": round(self.zfeder.x, 3),
+              "idx": self._idx, "sprung": self._sprung, "text_status": sp.text_status,
+              "zeilen": [t for _, t in sp.text] if self.lfeder.x > 0.02 else None,
+              "fp": round(self._p("flip"), 3), "gross_alt": self._gross_alt,
+              "rp": round(kurve(self._p("rolle"), 0.4, 0, 0.2, 1), 3), "rdir": self._rdir, "wert_alt": self._wert_alt,
+              "tp": round(self.tfeder.x, 3), "cpos": round(self.cfeder.x * 2, 3), "cal": round(self.cafeder.x, 3),
+              "druck": self._druck_zone, "dp": round(self.dfeder.x, 3), "lp": round(self._p("leiste"), 3),
+              "sp": round(self._p("song"), 3), "song_alt": self._song_alt,
+              "cp": round(kurve(self._p("cover"), 0.23, 1, 0.32, 1), 3), "cdir": self._cdir,
+              "cover_id": id(self._cover), "scrub": bool(self._druck and self._druck[0] == "zeit")}
         schluessel = json.dumps([st, ui], sort_keys=True)
         if schluessel == self._schluessel:
             return
         self._schluessel = schluessel
-        if self.feder.ruhig:
-            bild, self.zonen = zeichnen(st, ui, self.z, sp.cover)
+        if self.feder.ruhig and self.lfeder.ruhig:
+            bild, self.zonen = zeichnen(st, ui, self.z, self._cover, self._cover_alt)
         else:
             # ponytail: waehrend der Feder halbe Aufloesung + hochskalieren (~3x schneller);
             # die Bewegung verdeckt die Unschaerfe, in Ruhe wird scharf gemalt
-            klein, zonen = zeichnen(st, ui, self.z / 2, sp.cover)
-            groesse = (round(WW * self.z), round(WH * self.z))
+            klein, zonen = zeichnen(st, ui, self.z / 2, self._cover, self._cover_alt)
+            groesse = (round(WW * self.z), min(round(WH * self.z), round(hoehe(ui) * self.z)))
             bild = np.asarray(Image.fromarray(klein, "RGBA").resize(groesse, Image.BILINEAR))
             self.zonen = [(n,) + tuple(v * 2 for v in r) for n, *r in zonen]
         self.ebene.zeigen(np.ascontiguousarray(bild))
