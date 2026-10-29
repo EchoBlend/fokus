@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -214,9 +214,18 @@ class Ebene:
             self.g.DeleteObject(self._bmp)
         self._bmp, self.bits, self.w, self.h = bmp, bits, w, h
 
-    def zeigen(self, bgra):
-        """bgra: uint8 (h, w, 4), vormultipliziert."""
+    def zeigen(self, bgra, voll_h=None):
+        """bgra: uint8 (h, w, 4), vormultipliziert. voll_h: feste Fensterhoehe — das Bild darf
+        niedriger sein (nur der benutzte Teil wird gemalt), das Fenster aendert nie seine Groesse;
+        wechselnde Groessen kaempfen sonst mit Tk und lassen die Pille zittern."""
         h, w = bgra.shape[:2]
+        if voll_h and voll_h > h:
+            if getattr(self, "_puffer", None) is None or self._puffer.shape[:2] != (voll_h, w):
+                self._puffer, self._benutzt = np.zeros((voll_h, w, 4), np.uint8), voll_h
+            self._puffer[:h] = bgra
+            if self._benutzt > h:
+                self._puffer[h:self._benutzt] = 0
+            self._benutzt, bgra, h = h, self._puffer, voll_h
         self._groesse(w, h)
         ctypes.memmove(self.bits, bgra.ctypes.data, bgra.nbytes)
         size, src = wt.SIZE(w, h), wt.POINT(0, 0)
@@ -278,6 +287,7 @@ class Leinwand:
     def __init__(self, w, h):
         self.w, self.h = w, h
         self.a = np.zeros((4, h, w), np.float32)     # Ebenen getrennt: numpy rechnet zusammenhaengend
+        self.flips = []                              # Klappzahlen + Hintergrund darunter (flip_nachmalen)
 
     def _feld(self, x0, y0, x1, y1):
         x0, y0 = max(0, int(x0)), max(0, int(y0))
@@ -393,9 +403,17 @@ class Leinwand:
         m = m[sl[0].start - y0:sl[0].stop - y0, sl[1].start - x0:sl[1].stop - x0]
         self._ueber(sl, farbe, m)
 
-    def flip(self, x, y, alt, neu, font, farbe, p):
+    def flip(self, x, y, alt, neu, font, farbe, p, merken=True):
         """Klappzahl (Flip-Clock ohne Karten): geaenderte Zeichen klappen oben weg (0-50 %,
         ease-in) und unten auf (50-100 %, ease-out), wie satoriui/flip-clock."""
+        if merken:
+            # Hintergrund unter der Zahl merken: Folgebilder malen nur diese Flaeche neu (flip_nachmalen)
+            _, t, _, b = font.getbbox("0123456789:+", anchor="ls")     # eng: nichts Spaeteres ueberdecken
+            breite = max(font.getlength(alt or ""), font.getlength(neu))
+            x0, y0 = max(0, int(x) - 2), max(0, int(y + t) - 2)
+            x1, y1 = min(self.w, int(x + breite) + 3), min(self.h, int(y + b) + 2)
+            if x1 > x0 and y1 > y0:
+                self.flips.append((x0, y0, x1, y1, self.a[:, y0:y1, x0:x1].copy(), (x, y, alt, neu, font, farbe)))
         if p >= 1 or not alt or alt == neu:
             return self.text(x, y, neu, font, farbe)
         if len(alt) != len(neu):
@@ -478,8 +496,18 @@ class Leinwand:
         cov = np.clip(0.5 - _box_abstand(xx, yy, x0, y0, x0 + n, y0 + n, r), 0, 1) * alpha
         self._ueber(sl, px[sl[0].start - y0:sl[0].stop - y0, sl[1].start - x0:sl[1].stop - x0], cov)
 
-    def bgra(self):
-        return (np.stack([self.a[2], self.a[1], self.a[0], self.a[3]], -1) * 255 + 0.5).astype(np.uint8)
+    def bgra(self, ys=slice(None), xs=slice(None)):
+        a = self.a[:, ys, xs]
+        return (np.stack([a[2], a[1], a[0], a[3]], -1) * 255 + 0.5).astype(np.uint8)
+
+
+def flip_nachmalen(lw, bild, fp):
+    """Nur die Klappziffern neu malen, der Rest des letzten Bildes bleibt: ~2 ms statt ~30 ms."""
+    for x0, y0, x1, y1, grund, args in lw.flips:
+        lw.a[:, y0:y1, x0:x1] = grund
+        lw.flip(*args, fp, merken=False)
+        bild[y0:y1, x0:x1] = lw.bgra(slice(y0, y1), slice(x0, x1))
+    return bild
 
 
 # Farben (Apple-System-Toene, dunkel)
@@ -540,6 +568,7 @@ def kuerzen(s, font, breite):
 
 
 _GRUND = {}   # Schatten + Glas je Ruhelage
+LETZTE = None  # Leinwand des letzten vollen Bildes
 
 
 def zeichnen(st, ui, z, cover=None, cover_alt=None):
@@ -563,14 +592,16 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
         return name == hov
 
     def gr(name):
-        """Druck-Pop: gedrueckter Knopf schrumpft auf 0.92 und federt ueber 1 zurueck."""
-        return 0.92 + 0.08 * ui.get("dp", 1.0) if ui.get("druck") == name else 1.0
+        """Druck: Knopf taucht in 0.2 s kurz auf 0.93 ab und kommt zurueck (ohne Nachfedern)."""
+        return 1 - 0.07 * math.sin(math.pi * ui.get("dp", 1.0)) if ui.get("druck") == name else 1.0
 
     c1, c2 = ton(st)
     puls = ui["puls"]
 
     # Grund: Schatten, Glas, Lichtkante (+ Songtext-Karte als eigene Insel)
-    grund_key = (round(m, 4), round(ly, 4), ui["anker"], z, lw.h)
+    ringx, ringy = (x0 + CH / 2, y0 + CH / 2) if m < 0.5 else (x0 + 20 + 40, y0 + 20 + 40)
+    schein = st["status"] != "aus"
+    grund_key = (round(m, 4), round(ly, 4), ui["anker"], z, lw.h, c1 if schein and not puls else None)
     if grund_key in _GRUND:
         lw.a[:] = _GRUND[grund_key]
     else:
@@ -583,10 +614,11 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
         for f in flaechen:
             lw.box(*f, (16, 16, 19, 238))
             lw.rand(*f, 0.24, 0.05, dicke=max(1.0, S(0.8)))
+        if schein and not puls:                   # Farbschein gehoert zum Grund (spart ~8 ms je Bild)
+            lw.schein(S(ringx), S(ringy), S(70 + 90 * m), a(c1, 46), clip=(X0, Y0, X1, Y1, R))
         if m in (0.0, 1.0) and ly in (0.0, 1.0):  # nur Ruhelagen merken
             _GRUND[grund_key] = lw.a.copy()
-    ringx, ringy = (x0 + CH / 2, y0 + CH / 2) if m < 0.5 else (x0 + 20 + 40, y0 + 20 + 40)
-    if st["status"] != "aus":
+    if schein and puls:
         lw.schein(S(ringx), S(ringy), S(70 + 90 * m), a(c1, 46 + 40 * puls), clip=(X0, Y0, X1, Y1, R))
 
     anteil = 1.0 if st["faellig"] else st["lauf_s"] / max(1, (st["pause_min"] if st["status"] == "pause"
@@ -623,7 +655,8 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
         fk = schrift(round(S(11)), 460)
         mu = ui["musik"]
         hv = ui.get("hv", 0.0) if mu.get("verbunden") else 0.0     # Maus ueber der Pille
-        frei = w - CH - 46 - (44 + 70 * hv if mu.get("verbunden") else 0)
+        # Kuerzen nach dem Hover-Ziel, nicht dem laufenden Wert: sonst springt der Text jedes Bild
+        frei = w - CH - 46 - (44 + 70 * ui.get("hz", hv) if mu.get("verbunden") else 0)
         lw.text(S(tx), S(y0 + 40), kuerzen(klein, fk, S(frei)), fk, a(GRAU, 255 * ca))
         if mu.get("verbunden"):
             # beim Hover rueckt das Cover nach links, zurueck/weiter blenden daneben ein
@@ -791,22 +824,39 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
         lw.text(S(L), S(hy), info, fk, a(GRAU, ein(255)))
         jetzt = datetime.fromtimestamp(ui["jetzt"])
         lw.text(S(Rr), S(hy), jetzt.strftime("%H:%M"), fk, a(GRAU, ein(170)), "rs")
-        tl0, tl1 = hy + 8, hy + 14
-        lw.box(S(L), S(tl0), S(Rr), S(tl1), S(3), a(WEISS, ein(16)))
+        # Eine Pille je Stunde (Stufen); Bloecke fuellen sie an ihrer Uhrzeit, die laufende Stunde ist umrandet
+        tl0, tl1 = hy + 9, hy + 19
         h0 = heute_start(ui["jetzt"])
         segs = st["segmente"]
-        von = min([6.0] + [(s - h0) / 3600 for s, _, _ in segs])
-        bis = max([22.0, (ui["jetzt"] - h0) / 3600 + 0.5] + [(e - h0) / 3600 for _, e, _ in segs])
-        lp = kurve(ui.get("lp", 1.0), 0.22, 1, 0.36, 1)
-        sk = lambda t: L + (((t - h0) / 3600 - von) / (bis - von) * (Rr - L)) * lp
-        for s, e, art_ in segs:
-            xa, xb = sk(s), max(sk(e), sk(s) + 3)
-            if xb - xa > 5:
-                xa, xb = xa + 1, xb - 1
-            lw.box(S(xa), S(tl0), S(xb), S(tl1), S(3), a(TOENE["pause" if art_ == "pause" else "arbeit"][0],
-                                                          ein(255)))
-        xn = sk(ui["jetzt"])
-        lw.box(S(xn - 1), S(tl0 - 3), S(xn + 1), S(tl1 + 3), S(1), a(WEISS, ein(220)))
+        jetzt_h = (ui["jetzt"] - h0) / 3600
+        von = int(min([6.0, jetzt_h] + [(s - h0) / 3600 for s, _, _ in segs]))
+        bis = int(math.ceil(max([22.0, jetzt_h + 0.01] + [(e - h0) / 3600 for _, e, _ in segs])))
+        n_h, lueck = bis - von, 3
+        pw = (Rr - L - lueck * (n_h - 1)) / n_h
+        lp = ui.get("lp", 1.0)
+        for i in range(n_h):
+            stunde = von + i
+            # gestaffelt einblenden: jede Pille 0.25 s, links zuerst (ease aus staged-progress-bar)
+            pi = kurve(max(0.0, min(1.0, lp * 1.6 - i / n_h * 0.6)), 0.22, 1, 0.36, 1)
+            if pi <= 0:
+                continue
+            px0 = L + i * (pw + lueck)
+            px1 = px0 + pw
+            yy0 = tl0 + (tl1 - tl0) * (1 - pi) / 2
+            yy1 = tl1 - (tl1 - tl0) * (1 - pi) / 2
+            jetzt_hier = stunde <= jetzt_h < stunde + 1
+            grund_a = 26 if jetzt_hier else (16 if stunde < jetzt_h else 8)
+            lw.box(S(px0), S(yy0), S(px1), S(yy1), S(3), a(WEISS, ein(grund_a * pi)))
+            for s, e, art_ in segs:
+                ta, tb = max((s - h0) / 3600, stunde), min((e - h0) / 3600, stunde + 1)
+                if tb <= ta:
+                    continue
+                xa, xb = px0 + (ta - stunde) * pw, px0 + (tb - stunde) * pw
+                xb = max(xb, xa + 2)
+                lw.box(S(xa), S(yy0), S(min(px1, xb)), S(yy1), S(3),
+                       a(TOENE["pause" if art_ == "pause" else "arbeit"][0], ein(255 * pi)))
+            if jetzt_hier:
+                lw.rand(S(px0), S(yy0), S(px1), S(yy1), S(3), 0.55 * ea * pi, 0.55 * ea * pi, dicke=S(1))
 
         # Musik (bjork-now-playing-card): Cover gleitet beim Songwechsel, Titel rollt, Knoepfe druecken ein
         ea = reihe(y0 + EH - 24)   # letzte Zeile: voll sichtbar, sobald ganz offen
@@ -863,6 +913,8 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
                 lw.box(S(vx0), S(vy - 2), S(vk), S(vy + 2), S(2), a(WEISS, ein(230 if an else 200)))
                 lw.kreis(S(vk), S(vy), S(6 if an else 5), a(WEISS, ein(255)))
 
+    global LETZTE
+    LETZTE = lw            # ponytail: fuer flip_nachmalen; ein Fenster, ein Bild
     return lw.bgra(), zonen
 
 
@@ -1207,8 +1259,11 @@ class Feder:
     def schritt(self, dt):
         k = self.k
         c = 2 * math.sqrt(k) * self.d
-        self.v += (k * (self.ziel - self.x) - c * self.v) * dt
-        self.x = max(-0.04, min(1.06, self.x + self.v * dt))
+        # feste Teilschritte: bei steifen Federn und langen Bildern (50 ms) schwingt Euler sonst auf
+        n = max(1, math.ceil(dt / 0.004))
+        for _ in range(n):
+            self.v += (k * (self.ziel - self.x) - c * self.v) * dt / n
+            self.x += self.v * dt / n
         if abs(self.ziel - self.x) < 0.002 and abs(self.v) < 0.02:
             self.x, self.v = self.ziel, 0.0
 
@@ -1237,16 +1292,14 @@ class App:
         self.letzter_stand = self.timer.stand()
 
         # Aufklappen mit mehr Schwung (bounce ~0.4 wie die Dynamic Island von aghasisahakyan1)
-        self.feder, self.anker, self.tab = Feder(daempfung=0.6), "r", "fokus"
+        self.feder, self.anker, self.tab = Feder(k=600.0, daempfung=0.8), "r", "fokus"
         self.hfeder = Feder(k=500.0, daempfung=1.0)        # Hover-Einblendung der Musikknoepfe
         # Songtext: Karte (federt auf), Zeilenwechsel (Pop)
-        self.lfeder, self.zfeder = Feder(k=300.0, daempfung=0.6), Feder(k=320.0, daempfung=0.62)
-        self.tfeder = Feder(k=420.0, daempfung=0.7)         # Fokus|Pause-Auswahl gleitet
-        self.cfeder, self.cafeder = Feder(k=420.0, daempfung=0.7), Feder(k=500.0, daempfung=1.0)  # Chip: Lage 0..1, Sicht
-        self.dfeder = Feder(k=650.0, daempfung=0.45)        # Druck-Pop des geklickten Knopfs
-        self.zfeder.x = self.zfeder.ziel = self.dfeder.x = self.dfeder.ziel = 1.0
-        self.federn = (self.feder, self.hfeder, self.lfeder, self.zfeder, self.tfeder, self.cfeder, self.cafeder,
-                       self.dfeder)
+        # Pop = schnell und fast ohne Nachschwingen (Daempfung ~0.85-0.9), nicht wabbelig
+        self.lfeder = Feder(k=600.0, daempfung=0.8)
+        self.tfeder = Feder(k=700.0, daempfung=0.9)         # Fokus|Pause-Auswahl gleitet
+        self.cfeder, self.cafeder = Feder(k=700.0, daempfung=0.9), Feder(k=700.0, daempfung=1.0)  # Chip: Lage 0..1, Sicht
+        self.federn = (self.feder, self.hfeder, self.lfeder, self.tfeder, self.cfeder, self.cafeder)
         self._idx, self._sprung, self._druck_zone, self.anim = -1, 0, None, {}
         # zuletzt gezeigte Werte; aendern sie sich, startet die passende Animation
         self._gross = self._wert = self._song = self._cover = None
@@ -1297,8 +1350,7 @@ class App:
 
     def _platzieren(self):
         ox, oy = self._versatz()
-        # nur verschieben: die Groesse setzt zeigen() passend zur Leinwand
-        self.top.geometry(f"+{self.px - ox}+{self.py - oy}")
+        self.top.geometry(f"{round(WW * self.z)}x{round(WH * self.z)}+{self.px - ox}+{self.py - oy}")
 
     def aufklappen(self, auf=True):
         if auf and self.feder.ziel == 0:
@@ -1360,7 +1412,8 @@ class App:
 
     def _klick(self, zone):
         if zone:
-            self._druck_zone, self.dfeder.x, self.dfeder.v = zone, 0.0, 0.0   # Knopf gibt nach, federt zurueck
+            self._druck_zone = zone                      # Knopf drueckt kurz ein (wie CSS active:scale)
+            self._start("druck", 0.2)
         if zone in ("weiter", "zurueck"):
             self._cdir = -1 if zone == "zurueck" else 1
         if zone == "text":
@@ -1408,14 +1461,17 @@ class App:
         if h != self.hover:
             self.hover = h
             self.top.configure(cursor="hand2" if h else "")
+            self._wecken()
 
     def _betreten(self, e):
         self._zu_abbrechen()
         self.hfeder.ziel = 1.0
+        self._wecken()
 
     def _verlassen(self, e):
         self.hover = None
         self.hfeder.ziel = 0.0
+        self._wecken()
         if self.feder.ziel == 1 and not self._druck:
             self._zu_job = self.root.after(6000, lambda: self.aufklappen(False))
 
@@ -1536,7 +1592,8 @@ class App:
         idx = sp.index()
         if idx != self._idx:                               # neue Zeile: Karte rollt gefedert weiter
             self._sprung = max(-2, min(2, idx - self._idx)) if self._idx >= 0 else 1
-            self._idx, self.zfeder.x, self.zfeder.v = idx, 0.0, 0.0
+            self._idx = idx
+            self._start("zeile", 0.45)
         st = self.timer.stand()
         self._aenderungen(st)
         for f in self.federn:
@@ -1547,7 +1604,13 @@ class App:
             self._klang = True
         self._malen()
         schnell = not all(f.ruhig for f in self.federn) or any(self._p(n) < 1 for n in self.anim)
-        self.root.after(15 if schnell else (50 if st["faellig"] else 200), self._takt)
+        self._takt_job = self.root.after(15 if schnell else (50 if st["faellig"] else 200), self._takt)
+
+    def _wecken(self):
+        """Naechstes Bild sofort statt nach bis zu 200 ms (Hover, Klick)."""
+        if getattr(self, "_takt_job", None):
+            self.root.after_cancel(self._takt_job)
+        self._takt_job = self.root.after(1, self._takt)
 
     def _aenderungen(self, st):
         """Vergleicht Gezeigtes mit dem Stand und startet Flip, Rollen, Gleiten, Songwechsel."""
@@ -1595,21 +1658,29 @@ class App:
         ui = {"m": self.feder.x, "anker": self.anker, "hover": self.hover, "tab": self.tab,
               "puls": round(puls, 2), "jetzt": time.time() // 60 * 60,
               "musik": sp.stand, "cover_da": sp.cover is not None, "hv": round(self.hfeder.x, 3),
-              "text_an": sp.text_an, "ly": round(self.lfeder.x, 3), "zp": round(self.zfeder.x, 3),
+              "hz": self.hfeder.ziel,
+              "text_an": sp.text_an, "ly": round(self.lfeder.x, 3),
+              "zp": round(kurve(self._p("zeile"), 0.22, 1, 0.36, 1), 3),
               "idx": self._idx, "sprung": self._sprung, "text_status": sp.text_status,
               "zeilen": [t for _, t in sp.text] if self.lfeder.x > 0.02 else None,
               "fp": round(self._p("flip"), 3), "gross_alt": self._gross_alt,
               "rp": round(kurve(self._p("rolle"), 0.4, 0, 0.2, 1), 3), "rdir": self._rdir, "wert_alt": self._wert_alt,
               "tp": round(self.tfeder.x, 3), "cpos": round(self.cfeder.x * 2, 3), "cal": round(self.cafeder.x, 3),
-              "druck": self._druck_zone, "dp": round(self.dfeder.x, 3), "lp": round(self._p("leiste"), 3),
+              "druck": self._druck_zone, "dp": round(self._p("druck"), 3), "lp": round(self._p("leiste"), 3),
               "sp": round(self._p("song"), 3), "song_alt": self._song_alt,
               "cp": round(kurve(self._p("cover"), 0.23, 1, 0.32, 1), 3), "cdir": self._cdir,
               "cover_id": id(self._cover), "scrub": bool(self._druck and self._druck[0] == "zeit")}
-        schluessel = json.dumps([st, ui], sort_keys=True)
+        # Vergleichsschluessel: laufender Block in 30-s-Schritten — er waechst alle 0.1 s, die Leiste
+        # zeigt das nicht, sonst wird jedes Bild voll neu gemalt
+        st_k = dict(st, segmente=[[s_, round(e_ / 30), a_] for s_, e_, a_ in st["segmente"]])
+        schluessel = json.dumps([st_k, ui], sort_keys=True)
         if schluessel == self._schluessel:
             return
         self._schluessel = schluessel
-        if self.feder.ruhig and self.lfeder.ruhig:
+        basis = json.dumps([st_k, dict(ui, fp=None)], sort_keys=True)
+        if basis == getattr(self, "_basis", None) and getattr(self, "_bild", None) is not None and LETZTE is not None:
+            bild = flip_nachmalen(LETZTE, self._bild, ui["fp"])        # nur die Klappziffern
+        elif self.feder.ruhig and self.lfeder.ruhig:
             bild, self.zonen = zeichnen(st, ui, self.z, self._cover, self._cover_alt)
         else:
             # ponytail: waehrend der Feder halbe Aufloesung + hochskalieren (~3x schneller);
@@ -1618,7 +1689,9 @@ class App:
             groesse = (round(WW * self.z), min(round(WH * self.z), round(hoehe(ui) * self.z)))
             bild = np.asarray(Image.fromarray(klein, "RGBA").resize(groesse, Image.BILINEAR))
             self.zonen = [(n,) + tuple(v * 2 for v in r) for n, *r in zonen]
-        self.ebene.zeigen(np.ascontiguousarray(bild))
+        voll = self.feder.ruhig and self.lfeder.ruhig
+        self._basis, self._bild = (basis, bild) if voll else (None, None)
+        self.ebene.zeigen(np.ascontiguousarray(bild), round(WH * self.z))
 
     def beenden(self):
         self._ende = True
