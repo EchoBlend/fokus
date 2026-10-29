@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -280,6 +280,21 @@ def _box_abstand(xx, yy, x0, y0, x1, y1, r):
     return np.hypot(np.maximum(qx, 0), np.maximum(qy, 0)) + np.minimum(np.maximum(qx, qy), 0) - r
 
 
+def _subpixel(m, x, y):
+    """PIL setzt Text nur auf ganze Pixel — in Bewegung springt er sonst neben den weich
+    gleitenden Flaechen. Verschiebt die Maske um den Bruchteil von x/y (linear), +1 px Rand;
+    sie gehoert dann an (floor(x), floor(y))."""
+    fx, fy = x - math.floor(x), y - math.floor(y)
+    m = np.pad(m, ((0, 1), (0, 1)))
+    if fx > 0.01:
+        m[:, 1:] = m[:, 1:] * (1 - fx) + m[:, :-1] * fx
+        m[:, 0] *= 1 - fx
+    if fy > 0.01:
+        m[1:] = m[1:] * (1 - fy) + m[:-1] * fy
+        m[0] *= 1 - fy
+    return m
+
+
 class Leinwand:
     """Vormultiplizierte RGBA-Flaeche (float 0..1). Jede Form rechnet nur in ihrem
     Rechteck — sonst kostet eine 60-fps-Animation bei 200 % Skalierung zu viel."""
@@ -406,8 +421,9 @@ class Leinwand:
         ImageDraw.Draw(maske).text((rand - l, rand - t), s, font=font, fill=255, anchor=anker)
         if blur > 0.3:
             maske = maske.filter(ImageFilter.GaussianBlur(blur))
-        x0, y0 = int(round(x)) + l - rand, int(round(y)) + t - rand
-        x1, y1 = x0 + maske.width, y0 + maske.height
+        m = _subpixel(np.asarray(maske, np.float32) / 255.0, x, y)
+        x0, y0 = math.floor(x) + l - rand, math.floor(y) + t - rand
+        x1, y1 = x0 + m.shape[1], y0 + m.shape[0]
         if clip:
             f = self._feld(max(x0, clip[0]), max(y0, clip[1]), min(x1, clip[2]), min(y1, clip[3]))
         else:
@@ -415,7 +431,6 @@ class Leinwand:
         if f is None:
             return
         sl, _, _ = f
-        m = np.asarray(maske, np.float32) / 255.0
         m = m[sl[0].start - y0:sl[0].stop - y0, sl[1].start - x0:sl[1].stop - x0]
         self._ueber(sl, farbe, m)
 
@@ -469,9 +484,9 @@ class Leinwand:
                 quelle = np.clip(g + (zeilen - g) / c, 0, H - 1).astype(int)
                 cov[rein] = N[quelle[rein]]
                 hell[rein] = 0.55 + 0.45 * c
-        cov = cov * hell[:, None]
-        x0, y0 = int(round(x)), int(round(y)) - asc
-        f = self._feld(x0, y0, x0 + breite, y0 + H)
+        cov = _subpixel(cov * hell[:, None], x, y)
+        x0, y0 = math.floor(x), math.floor(y) - asc
+        f = self._feld(x0, y0, x0 + cov.shape[1], y0 + cov.shape[0])
         if f is None:
             return
         sl, _, _ = f
