@@ -31,11 +31,13 @@ function lautAnzeige() {
 
 let methode = null;
 
-// Herz im Player ("Zu Lieblingssongs hinzufuegen"); aria-checked zeigt, ob der Song schon gespeichert ist
+// Herz in der Player-Leiste (Zu „Lieblingssongs" hinzufuegen); aria-checked zeigt, ob der Song gespeichert ist.
+// Nur in der Leiste suchen: auf der Seite haben Dutzende Karten eigene add-buttons.
 function herz() {
-  const w = $('[data-testid="now-playing-widget"]') || document;
-  return w.querySelector('button[data-testid="add-button"]')
-    || [...w.querySelectorAll("button[aria-label]")].find((b) => /Lieblingssongs|Liked Songs/i.test(b.getAttribute("aria-label")));
+  const w = $('[data-testid="now-playing-bar"]') || $('[data-testid="now-playing-widget"]');
+  if (!w) return null;
+  return [...w.querySelectorAll("button[aria-label]")].find((b) => /Lieblingssongs|Liked Songs/i.test(b.getAttribute("aria-label")))
+    || w.querySelector('button[aria-checked]:not([data-testid])');   // gespeichert: Label wechselt auf "Playlist"
 }
 
 function favorit() {
