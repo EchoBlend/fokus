@@ -31,6 +31,20 @@ function lautAnzeige() {
 
 let methode = null;
 
+// Herz im Player ("Zu Lieblingssongs hinzufuegen"); aria-checked zeigt, ob der Song schon gespeichert ist
+function herz() {
+  const w = $('[data-testid="now-playing-widget"]') || document;
+  return w.querySelector('button[data-testid="add-button"]')
+    || [...w.querySelectorAll("button[aria-label]")].find((b) => /Lieblingssongs|Liked Songs/i.test(b.getAttribute("aria-label")));
+}
+
+function favorit() {
+  const h = herz();
+  if (!h) return null;
+  const c = h.getAttribute("aria-checked");
+  return c === null ? /entfernen|remove/i.test(h.getAttribute("aria-label") || "") : c === "true";
+}
+
 // "1:23" / "1:02:03" -> Sekunden
 function sek(t) {
   if (!t) return null;
@@ -67,6 +81,7 @@ function stand() {
     bild: art || (img && img.src) || null,
     spielt,
     lautstaerke: lautAnzeige(),
+    favorit: favorit(),
     pos,
     dauer,
     gefunden: {
@@ -75,6 +90,7 @@ function stand() {
       zurueck: !!$(`[data-testid="${KNOEPFE.zurueck}"]`),
       regler: !!r,
       leiste: !!leiste(),
+      herz: !!herz(),
       position: pos !== null,
       methode,
       mediasession: !!md,
@@ -124,6 +140,10 @@ chrome.runtime.onMessage.addListener((b, _absender, antwort) => {
     if (k) k.click();
   } else if (b.cmd === "lautstaerke") {
     setzeLautstaerke(b.wert);
+  } else if (b.cmd === "favorit") {
+    // nur speichern: ein Klick auf ein gefuelltes Herz oeffnet bei Spotify das Playlist-Menue
+    const h = herz();
+    if (h && favorit() === false) h.click();
   }
   // Spotify braucht einen Moment, bis der Player nachzieht
   setTimeout(() => antwort(stand()), b.cmd === "stand" ? 0 : b.cmd === "lautstaerke" ? 450 : 350);

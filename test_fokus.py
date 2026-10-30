@@ -80,6 +80,24 @@ def main():
     assert {"cover", "aufklappen"} <= {z[0] for z in zonen}
     _, zonen = zeichnen(t.stand(), dict(ui, m=1.0), 1.0)
     assert {"playpause", "weiter", "zurueck", "lautstaerke"} <= {z[0] for z in zonen}
+    # Favorit: Herz-Zone nur, wenn der Tab das Herz kennt; Hover malt das Herz aufs Cover
+    assert "favorit" not in {z[0] for z in zonen}
+    fav = dict(ui, m=1.0, musik=dict(ui["musik"], favorit=False))
+    _, zonen = zeichnen(t.stand(), fav, 2.0, Image.new("RGB", (64, 64)))
+    assert "favorit" in {z[0] for z in zonen}
+    ohne, _ = zeichnen(t.stand(), fav, 2.0, Image.new("RGB", (64, 64)))
+    mit, _ = zeichnen(t.stand(), dict(fav, hover="favorit"), 2.0, Image.new("RGB", (64, 64)))
+    fz = next(z for z in zonen if z[0] == "favorit")
+    hell = lambda b: (b[int(fz[2]):int(fz[4]), int(fz[1]):int(fz[3]), :3].min(axis=2) > 200).sum()
+    assert hell(mit) > 100 and hell(ohne) == 0, (hell(mit), hell(ohne))     # weisses Herz nur beim Hover
+    _, zonen = zeichnen(t.stand(), dict(fav, m=0.0, hv=1.0), 1.0)
+    assert "favorit" in {z[0] for z in zonen}
+    gesendet = []
+    sp = Spotify()
+    sp.ws = type("W", (), {"senden": lambda self, d: gesendet.append(d)})()
+    sp.stand = {"favorit": False}
+    assert sp.befehl("favorit") and sp.stand["favorit"] is True and gesendet[-1]["cmd"] == "favorit"
+    assert not sp.befehl("favorit") and len(gesendet) == 1      # schon gespeichert: kein zweiter Klick
     ws_test()
     print("ok")
 
@@ -162,6 +180,19 @@ def ws_test():
     assert zeile_bei(z, 4) == "Zwei"
     assert zeile_bei(z, 6) is None          # Instrumental-Luecke
     assert zeile_bei(z, 99) == "Zwei"
+
+    # Kompass-Export: buendeln je Tag+Titel, Pausen/Kurzes raus, Merker zaehlt
+    from fokus_kompass import offen
+    t0 = time.mktime((2026, 10, 30, 9, 0, 0, 0, 0, -1))
+    bl = [{"start": t0, "ende": t0 + 600, "art": "arbeit", "titel": "A", "aufgabe_id": 7},
+          {"start": t0 + 700, "ende": t0 + 1300, "art": "arbeit", "titel": "A", "aufgabe_id": 7},
+          {"start": t0 + 1300, "ende": t0 + 1900, "art": "pause", "titel": "A", "aufgabe_id": 7},
+          {"start": t0 + 2000, "ende": t0 + 2060, "art": "arbeit", "titel": "", "aufgabe_id": None}]
+    o = offen(bl, 0)
+    assert o["bis"] == t0 + 2060
+    assert [(p["titel"], p["minuten"], p["bloecke"], p["von"]) for p in o["posten"]] == [("A", 20, 2, "09:00")], o
+    assert offen(bl, t0 + 600)["posten"][0]["minuten"] == 10
+    assert offen(bl, t0 + 2060) == {"bis": t0 + 2060, "posten": []}
     print("ok")
 
 

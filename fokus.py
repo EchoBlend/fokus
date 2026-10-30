@@ -6,7 +6,7 @@ Bloecke landen in %APPDATA%\\Fokus\\bloecke.jsonl. Lokale HTTP-Schnittstelle fue
 
   GET  http://127.0.0.1:47650/stand
   POST http://127.0.0.1:47650/timer  {"aktion": "start|anhalten|stop|pause|ziel", "minuten": 50, "titel": "..."}
-  POST http://127.0.0.1:47650/spotify {"cmd": "playpause|weiter|zurueck|lautstaerke", "wert": 0.4}
+  POST http://127.0.0.1:47650/spotify {"cmd": "playpause|weiter|zurueck|lautstaerke|favorit", "wert": 0.4}
 
 Spotify laeuft im Chrome-Tab; die Erweiterung in chrome-ext/ verbindet sich per
 WebSocket (/ws) und fuehrt die Befehle im Tab aus.
@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.5"
+VERSION = "0.2.6"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -266,6 +266,7 @@ def schrift_symbol(px):
 
 AUF, ZU, PLAY, PAUSE, STOP, PLUS, MINUS = "\uE70E", "\uE70D", "\uE768", "\uE769", "\uE71A", "\uE710", "\uE738"
 ZURUECK, WEITER, MIKRO = "\uE892", "\uE893", "\uE720"
+HERZ, HERZ_VOLL = "\uEB51", "\uEB52"
 
 
 def _glatt(e0, e1, x):
@@ -680,6 +681,12 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
             else:
                 lw.box(S(bx_), S(by_), S(bx_ + g_), S(by_ + g_), S(rad * sk), a(TOENE["arbeit"][0], 60 * alpha * al))
 
+    def herz(cx, cy, px, alpha, an):
+        """Favorit-Herz: gefuellt, wenn der Song schon in den Lieblingssongs ist."""
+        voll = ui["musik"].get("favorit")
+        lw.text(S(cx), S(cy), HERZ_VOLL if voll else HERZ, symbolschrift(max(1, round(S(px * gr("favorit"))))),
+                a((255, 92, 120) if voll else WEISS, 255 * alpha * (1.0 if an or voll else 0.85)), "mm")
+
     # --- zu ---
     ca = max(0.0, 1 - m * 2.6)
     if ca > 0:
@@ -705,6 +712,11 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
                        ca * (1.0 if spielt and not an else 0.45))
             if an or not spielt or cover is None:
                 musik_symbol(lw, S, kx + kg / 2, ky + kg / 2, 5.5, spielt, a(WEISS, 235 * ca))
+            if hv > 0.5 and mu.get("favorit") is not None:     # kleines Herz unten rechts am Cover
+                hx, hy = kx + kg - 1, ky + kg - 1
+                an = zone("favorit", hx - 9, hy - 9, hx + 9, hy + 9)
+                lw.kreis(S(hx), S(hy), S(8 * gr("favorit")), a((16, 16, 19), 240 * ca * hv))
+                herz(hx, hy + 0.5, 8.5, ca * hv, an)
             if hv > 0.02:
                 for name, sym_, sx in (("zurueck", ZURUECK, kx - 17), ("weiter", WEITER, kx + kg + 17)):
                     an = zone(name, sx - 13, ky, sx + 13, ky + kg) if hv > 0.5 else False
@@ -909,6 +921,13 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
         else:
             kx, kyy, kg = L + 12, ky0 + 12, 52
             cover_bild(kx, kyy, kg, 10, ea)
+            if mu.get("favorit") is not None:                # Hover ueber dem Cover: abdunkeln + Herz
+                an = zone("favorit", kx, kyy, kx + kg, kyy + kg)
+                if an:
+                    lw.box(S(kx), S(kyy), S(kx + kg), S(kyy + kg), S(10), (0, 0, 0, round(120 * ea)))
+                    herz(kx + kg / 2, kyy + kg / 2 + 1, 20, ea, an)
+                elif mu.get("favorit"):
+                    herz(kx + kg - 9, kyy + kg - 9, 11, ea, False)
             tx = kx + kg + 12
             ft, fa = schrift(round(S(13)), 620), schrift(round(S(11.5)), 460)
             breite = S(Rr - 120 - tx)
@@ -1111,7 +1130,7 @@ def songtext_laden(titel, kuenstler, dauer):
 class Spotify:
     """Stand des Spotify-Tabs + Befehle dorthin. Wird aus HTTP-Threads und dem
     Tk-Thread benutzt; nur einfache Zuweisungen, der GIL reicht."""
-    BEFEHLE = ("playpause", "weiter", "zurueck", "lautstaerke", "stand")
+    BEFEHLE = ("playpause", "weiter", "zurueck", "lautstaerke", "favorit", "stand")
 
     def __init__(self):
         self.ws, self.stand, self.cover, self._cover_url = None, {"verbunden": False}, None, None
@@ -1134,7 +1153,7 @@ class Spotify:
         if not isinstance(d, dict):
             return
         vorher, roh = self.position(), d.get("pos")
-        self.stand = {k: d.get(k) for k in ("verbunden", "titel", "kuenstler", "spielt", "lautstaerke", "bild",
+        self.stand = {k: d.get(k) for k in ("verbunden", "titel", "kuenstler", "spielt", "lautstaerke", "favorit", "bild",
                                             "pos", "dauer", "gefunden")}
         # pos kommt in ganzen Sekunden, ~0.3 s nach dem Sekundenwechsel (Observer-Verzoegerung im Tab).
         # Nur beim Wechsel neu ankern; sonst weiterzaehlen statt auf den abgerundeten Wert zurueckzufallen.
@@ -1203,6 +1222,10 @@ class Spotify:
         if cmd == "lautstaerke":
             wert = max(0.0, min(1.0, float(wert)))
             self.stand["lautstaerke"] = wert             # sofort zeigen, Tab zieht nach
+        elif cmd == "favorit":
+            if self.stand.get("favorit") is not False:   # unbekannt oder schon gespeichert: nichts tun
+                return False
+            self.stand["favorit"] = True
         elif cmd == "playpause" and self.stand.get("spielt") is not None:
             self.stand["spielt"] = not self.stand["spielt"]
         try:
@@ -1495,7 +1518,7 @@ class App:
             self.cfg["songtext"] = self.spotify.text_an
             speichere_config(self.cfg)
             return
-        if zone in ("cover", "playpause", "weiter", "zurueck"):
+        if zone in ("cover", "playpause", "weiter", "zurueck", "favorit"):
             self.spotify.befehl("playpause" if zone == "cover" else zone)
             return
         if self.feder.ziel == 0:
