@@ -1,7 +1,9 @@
 // Läuft im Spotify-Tab: liest den Player, führt Befehle der Fokus-App aus.
-// Kann zweimal landen (Manifest + Nachreichen aus background.js) — nur einmal einrichten.
-if (!globalThis.__fokusBruecke) {
-globalThis.__fokusBruecke = true;
+// Kann zweimal landen (Manifest + Nachreichen aus background.js) — nur einmal je Version einrichten.
+// Nach einem Neuladen der Erweiterung bleibt das alte Skript im Tab verwaist und meldet sich selbst ab.
+const VERSION = chrome.runtime.getManifest().version;
+if (globalThis.__fokusBruecke !== VERSION) {
+globalThis.__fokusBruecke = VERSION;
 const $ = (s) => document.querySelector(s);
 const KNOEPFE = {
   playpause: "control-button-playpause",
@@ -78,6 +80,7 @@ function stand() {
   const [pos, dauer] = position();
   return {
     verbunden: true,
+    version: VERSION,
     titel: (md && md.title) || (titelEl && titelEl.textContent) || "",
     kuenstler: (md && md.artist) || kuenstler,
     bild: art || (img && img.src) || null,
@@ -143,9 +146,11 @@ chrome.runtime.onMessage.addListener((b, _absender, antwort) => {
   } else if (b.cmd === "lautstaerke") {
     setzeLautstaerke(b.wert);
   } else if (b.cmd === "favorit") {
-    // nur speichern: ein Klick auf ein gefuelltes Herz oeffnet bei Spotify das Playlist-Menue
-    const h = herz();
-    if (h && favorit() === false) h.click();
+    // Spotifys Tastenkuerzel Alt+Shift+B schaltet Lieblingssong an und aus; ein Klick aufs
+    // gefuellte Herz oeffnet nur das Playlist-Menue
+    const o = { key: "B", code: "KeyB", keyCode: 66, which: 66, altKey: true, shiftKey: true, bubbles: true, cancelable: true };
+    document.body.dispatchEvent(new KeyboardEvent("keydown", o));
+    document.body.dispatchEvent(new KeyboardEvent("keyup", o));
   }
   // Spotify braucht einen Moment, bis der Player nachzieht
   setTimeout(() => antwort(stand()), b.cmd === "stand" ? 0 : b.cmd === "lautstaerke" ? 450 : 350);
@@ -163,8 +168,10 @@ function melden() {
   letzter = j;
   chrome.runtime.sendMessage({ typ: "stand", stand: s }).catch(() => {});
 }
-new MutationObserver(() => {
+const beobachter = new MutationObserver(() => {
+  if (!chrome.runtime?.id) { beobachter.disconnect(); return; }   // Erweiterung neu geladen: dieses Skript ist verwaist
   if (!geplant) { geplant = true; setTimeout(melden, 300); }
-}).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+});
+beobachter.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
 melden();
 }

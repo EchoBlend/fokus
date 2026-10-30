@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.7"
+VERSION = "0.2.8"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -917,7 +917,7 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
         if not mu.get("verbunden"):
             lw.text(S(L + 16), S(ky0 + 32), "Spotify nicht verbunden", schrift(round(S(13)), 600),
                     a(WEISS, ein(220)))
-            lw.text(S(L + 16), S(ky0 + 52), "Erweiterung laden: V:\\Workflow\\chrome-ext",
+            lw.text(S(L + 16), S(ky0 + 52), f"Erweiterung laden: {Spotify.ORDNER}",
                     schrift(round(S(11)), 460), a(GRAU, ein(255)))
         else:
             kx, kyy, kg = L + 12, ky0 + 12, 52
@@ -1132,12 +1132,14 @@ class Spotify:
     """Stand des Spotify-Tabs + Befehle dorthin. Wird aus HTTP-Threads und dem
     Tk-Thread benutzt; nur einfache Zuweisungen, der GIL reicht."""
     BEFEHLE = ("playpause", "weiter", "zurueck", "lautstaerke", "favorit", "stand")
+    ORDNER = Path(sys.executable if getattr(sys, "frozen", False) else __file__).parent / "chrome-ext"
 
     def __init__(self):
         self.ws, self.stand, self.cover, self._cover_url = None, {"verbunden": False}, None, None
         self._pos_t, self._pos_roh = time.time(), None
         self.text_an, self.text, self._text_fuer = False, [], None     # Songtext: an/aus, Zeilen, fuer welchen Song
         self.text_status = "keiner"                                     # laedt | da | keiner
+        self._neu_geladen = False
 
     def verbunden(self, ws):
         self.ws = ws
@@ -1163,6 +1165,14 @@ class Spotify:
         else:
             self.stand["pos"], self._pos_t = vorher, time.time()
         self._pos_roh = roh
+        # Nach einem Update liegt die neue Erweiterung im Ordner, Chrome laedt sie aber erst auf Zuruf neu.
+        # Einmal pro Lauf: laedt Chrome sie aus einem anderen Ordner, bliebe es sonst eine Schleife.
+        if d.get("version") != VERSION and not self._neu_geladen and self.ws:
+            self._neu_geladen = True
+            try:
+                self.ws.senden({"cmd": "neuladen"})
+            except OSError:
+                pass
         self._text_pruefen()
         url = d.get("bild")
         if url != self._cover_url:
@@ -1224,9 +1234,9 @@ class Spotify:
             wert = max(0.0, min(1.0, float(wert)))
             self.stand["lautstaerke"] = wert             # sofort zeigen, Tab zieht nach
         elif cmd == "favorit":
-            if self.stand.get("favorit") is not False:   # unbekannt oder schon gespeichert: nichts tun
+            if self.stand.get("favorit") is None:        # Tab kennt kein Herz
                 return False
-            self.stand["favorit"] = True
+            self.stand["favorit"] = not self.stand["favorit"]
         elif cmd == "playpause" and self.stand.get("spielt") is not None:
             self.stand["spielt"] = not self.stand["spielt"]
         try:

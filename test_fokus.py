@@ -14,7 +14,7 @@ from http.server import ThreadingHTTPServer
 
 from PIL import Image
 
-from fokus import CW, EW, M, Api, Spotify, Timer, lrc_zeilen, mmss, zeilen_teilen, zeichnen, zeile_bei
+from fokus import CW, EW, M, VERSION, Api, Spotify, Timer, lrc_zeilen, mmss, zeilen_teilen, zeichnen, zeile_bei
 
 
 class Uhr:
@@ -97,7 +97,15 @@ def main():
     sp.ws = type("W", (), {"senden": lambda self, d: gesendet.append(d)})()
     sp.stand = {"favorit": False}
     assert sp.befehl("favorit") and sp.stand["favorit"] is True and gesendet[-1]["cmd"] == "favorit"
-    assert not sp.befehl("favorit") and len(gesendet) == 1      # schon gespeichert: kein zweiter Klick
+    assert sp.befehl("favorit") and sp.stand["favorit"] is False and len(gesendet) == 2   # zweiter Klick entfernt
+    sp.stand = {"favorit": None}
+    assert not sp.befehl("favorit") and len(gesendet) == 2
+    # Erweiterung einer anderen Version: einmal neu laden lassen, nicht in Schleife
+    sp.empfangen({"verbunden": True, "version": "alt"})
+    sp.empfangen({"verbunden": True, "version": "alt"})
+    assert [g["cmd"] for g in gesendet[2:]] == ["neuladen"], gesendet
+    manifest = json.loads((Spotify.ORDNER / "manifest.json").read_text("utf-8"))
+    assert manifest["version"] == VERSION, "chrome-ext/manifest.json: version = VERSION setzen"
     ws_test()
     print("ok")
 
@@ -141,14 +149,14 @@ def ws_test():
         kopf += s.recv(1)
     assert b"101" in kopf.split(b"\r\n")[0], kopf
     assert _lesen(s) == {"cmd": "stand"}                      # App fragt sofort nach dem Stand
-    s.sendall(_rahmen(json.dumps({"verbunden": True, "titel": "Lied", "spielt": False, "lautstaerke": 0.3})))
+    s.sendall(_rahmen(json.dumps({"verbunden": True, "version": VERSION, "titel": "Lied", "spielt": False, "lautstaerke": 0.3})))
     time.sleep(0.2)
     assert StubApp.spotify.stand["titel"] == "Lied"
 
     def antworten():
         cmd = _lesen(s)
         assert cmd == {"cmd": "lautstaerke", "wert": 0.8}, cmd
-        s.sendall(_rahmen(json.dumps({"verbunden": True, "titel": "Lied", "spielt": False, "lautstaerke": 0.8})))
+        s.sendall(_rahmen(json.dumps({"verbunden": True, "version": VERSION, "titel": "Lied", "spielt": False, "lautstaerke": 0.8})))
     th = threading.Thread(target=antworten)
     th.start()
     req = urllib.request.Request(f"http://127.0.0.1:{port}/spotify", method="POST",

@@ -17,6 +17,7 @@ function verbinden() {
   ws.onmessage = async (e) => {
     let befehl;
     try { befehl = JSON.parse(e.data); } catch { return; }
+    if (befehl.cmd === "neuladen") { chrome.runtime.reload(); return; }   // App wurde aktualisiert: neue Dateien laden
     senden(await anTab(befehl));
   };
   ws.onclose = () => { ws = null; };
