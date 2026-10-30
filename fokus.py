@@ -705,7 +705,8 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
         if mu.get("verbunden"):
             # beim Hover rueckt das Cover nach links, zurueck/weiter blenden daneben ein
             kx, ky, kg = x0 + w - 86 - 34 * hv, y0 + 9, 30
-            an = zone("cover", kx - 4, ky - 4, kx + kg + 4, ky + kg + 4)
+            # Herz-Knopf liegt auf der Cover-Ecke: zaehlt als Cover-Hover, sonst flackert das Cover beim Ueberfahren
+            an = zone("cover", kx - 4, ky - 4, kx + kg + 4, ky + kg + 4) or hov == "favorit"
             spielt = mu.get("spielt")
             g_ = gr("cover")
             cover_bild(kx + kg * (1 - g_) / 2, ky + kg * (1 - g_) / 2, kg * g_, 7,
