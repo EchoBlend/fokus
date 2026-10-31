@@ -11,10 +11,11 @@ import struct
 import threading
 import urllib.request
 from http.server import ThreadingHTTPServer
+from types import SimpleNamespace
 
 from PIL import Image
 
-from fokus import CW, EW, M, VERSION, Api, Spotify, Timer, lrc_zeilen, mmss, zeilen_teilen, zeichnen, zeile_bei
+from fokus import CW, EW, M, TOENE, VERSION, Api, App, primaer, ton, Spotify, Timer, lrc_zeilen, mmss, zeilen_teilen, zeichnen, zeile_bei
 
 
 class Uhr:
@@ -56,6 +57,17 @@ def main():
     zeilen = [json.loads(z) for z in tmp.read_text("utf-8").splitlines()]
     assert [(round(b["ende"] - b["start"]), b["art"]) for b in zeilen] == \
         [(30, "arbeit"), (45, "arbeit"), (60, "pause"), (0, "arbeit")]
+
+    # Stoppuhr: zaehlt nach oben, wird nie faellig, landet als Arbeitsblock
+    t.start(titel="Offen", offen=True)
+    uhr.t += 5000                        # weit ueber ziel_min (1)
+    s = t.stand()
+    assert s["offen"] and not s["faellig"] and s["lauf_s"] == 5000, s
+    from fokus import anzeige
+    assert anzeige(s) == ("1:23:20", "Offen"), anzeige(s)
+    t.stop()
+    assert not t.offen and json.loads(tmp.read_text("utf-8").splitlines()[-1])["art"] == "arbeit"
+    tmp.write_text("\n".join(tmp.read_text("utf-8").splitlines()[:-1]) + "\n", "utf-8")
 
     # neuer Timer liest den Tag aus der Ablage
     assert Timer(tmp, uhr).stand()["heute_s"] == 75
@@ -106,6 +118,24 @@ def main():
     assert [g["cmd"] for g in gesendet[2:]] == ["neuladen"], gesendet
     manifest = json.loads((Spotify.ORDNER / "manifest.json").read_text("utf-8"))
     assert manifest["version"] == VERSION, "chrome-ext/manifest.json: version = VERSION setzen"
+    # Pause verhaelt sich wie Arbeit: anhalten, weiter (bleibt Pause, Zeit laeuft weiter)
+    pu = Uhr(1_800_000_000.0)
+    pt = Timer(Path(tempfile.mkdtemp()) / "b.jsonl", pu)
+    pt.pause(30)
+    pu.t += 60
+    pt.anhalten()
+    pu.t += 500                          # angehalten zaehlt nicht
+    s = pt.stand()
+    assert s["status"] == "angehalten" and s["art"] == "pause" and s["rest_s"] == 30 * 60 - 60, s
+    assert primaer(s, "pause") == ("Weiter", "pause") and ton(s) == TOENE["angehalten"]
+    pt.anhalten()
+    assert pt.status == "pause" and ton(pt.stand()) == TOENE["pause"]
+    assert primaer(pt.stand(), "pause") == ("Anhalten", "neutral")
+    # Klick auf die zugeklappte Pille in der Pause haelt an, startet keinen Fokus
+    befehle = []
+    pille = SimpleNamespace(timer=pt, feder=SimpleNamespace(ziel=0), ausfuehren=befehle.append)
+    App._klick(pille, None)
+    assert befehle == [{"aktion": "anhalten"}], befehle
     ws_test()
     print("ok")
 

@@ -5,7 +5,8 @@ auf: Fokus/Pause, Zeit frei einstellen, Start/Anhalten/Stopp, Heute-Leiste.
 Bloecke landen in %APPDATA%\\Fokus\\bloecke.jsonl. Lokale HTTP-Schnittstelle fuer Claude:
 
   GET  http://127.0.0.1:47650/stand
-  POST http://127.0.0.1:47650/timer  {"aktion": "start|anhalten|stop|pause|ziel", "minuten": 50, "titel": "..."}
+  POST http://127.0.0.1:47650/timer  {"aktion": "start|stoppuhr|anhalten|stop|pause|ziel", "minuten": 50, "titel": "..."}
+                                    (stoppuhr = zaehlt ohne Ziel nach oben)
   POST http://127.0.0.1:47650/spotify {"cmd": "playpause|weiter|zurueck|lautstaerke|favorit", "wert": 0.4}
 
 Spotify laeuft im Chrome-Tab; die Erweiterung in chrome-ext/ verbindet sich per
@@ -37,7 +38,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.8"
+VERSION = "0.2.9"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -80,40 +81,44 @@ class Timer:
         self.status = "aus"
         self.ziel_min, self.pause_min = 50, 10
         self.titel, self.aufgabe_id = "", None
+        self.art = "arbeit"       # Phase des laufenden/angehaltenen Blocks: arbeit | pause
+        self.offen = False        # Stoppuhr: zaehlt ohne Ziel nach oben, nie faellig
         self.seit = None          # Beginn des laufenden Blocks
         self.gesammelt = 0.0      # Sekunden der laufenden Phase aus geschlossenen Bloecken
         h0 = heute_start(self.uhr())
         self.heute = [(max(b["start"], h0), b["ende"], b.get("art", "arbeit"))
                       for b in lade_bloecke(self.ablage) if b["ende"] > h0]
 
-    def start(self, minuten=None, titel=None, aufgabe_id=None):
+    def start(self, minuten=None, titel=None, aufgabe_id=None, offen=False):
         if self.status in ("arbeit", "pause"):
             self._block_schliessen()
+        self.offen = offen
         if minuten:
             self.ziel_min = int(minuten)
         if titel is not None:
             self.titel, self.aufgabe_id = titel, aufgabe_id
-        self.gesammelt, self.seit, self.status = 0.0, self.uhr(), "arbeit"
+        self.gesammelt, self.seit, self.status, self.art = 0.0, self.uhr(), "arbeit", "arbeit"
 
     def pause(self, minuten=None):
         if self.status in ("arbeit", "pause"):
             self._block_schliessen()
         if minuten:
             self.pause_min = int(minuten)
-        self.gesammelt, self.seit, self.status = 0.0, self.uhr(), "pause"
+        self.offen = False
+        self.gesammelt, self.seit, self.status, self.art = 0.0, self.uhr(), "pause", "pause"
 
     def anhalten(self):
-        """Umschalter: laufend -> angehalten -> laufend."""
-        if self.status == "arbeit":
+        """Umschalter: laufend -> angehalten -> laufend (Arbeit wie Pause)."""
+        if self.status in ("arbeit", "pause"):
             self._block_schliessen()
             self.status = "angehalten"
         elif self.status == "angehalten":
-            self.seit, self.status = self.uhr(), "arbeit"
+            self.seit, self.status = self.uhr(), self.art
 
     def stop(self):
         if self.status in ("arbeit", "pause"):
             self._block_schliessen()
-        self.status, self.gesammelt, self.seit = "aus", 0.0, None
+        self.status, self.gesammelt, self.seit, self.offen, self.art = "aus", 0.0, None, False, "arbeit"
 
     def _block_schliessen(self):
         ende = self.uhr()
@@ -134,16 +139,18 @@ class Timer:
         if self.seit is not None:
             segmente.append((self.seit, now, "pause" if self.status == "pause" else "arbeit"))
         lauf = self.gesammelt + (now - self.seit if self.seit is not None else 0.0)
-        ziel = self.pause_min if self.status == "pause" else self.ziel_min
+        ziel = self.pause_min if self.art == "pause" else self.ziel_min
         return {
             "status": self.status,
+            "art": self.art,
             "titel": self.titel,
             "aufgabe_id": self.aufgabe_id,
             "ziel_min": self.ziel_min,
             "pause_min": self.pause_min,
             "lauf_s": int(lauf),
             "rest_s": int(ziel * 60 - lauf),
-            "faellig": self.status != "aus" and lauf >= ziel * 60,
+            "offen": self.offen,
+            "faellig": self.status != "aus" and not self.offen and lauf >= ziel * 60,
             "heute_s": int(sum(e - max(s, h0) for s, e, a in segmente if a == "arbeit")),
             "fokus_bloecke": sum(1 for s in segmente if s[2] == "arbeit"),
             "segmente": [[round(s, 1), round(e, 1), a] for s, e, a in segmente],
@@ -267,6 +274,7 @@ def schrift_symbol(px):
 AUF, ZU, PLAY, PAUSE, STOP, PLUS, MINUS = "\uE70E", "\uE70D", "\uE768", "\uE769", "\uE71A", "\uE710", "\uE738"
 ZURUECK, WEITER, MIKRO = "\uE892", "\uE893", "\uE720"
 HERZ, HERZ_VOLL = "\uEB51", "\uEB52"
+STOPPUHR = "\uE916"
 
 
 def _glatt(e0, e1, x):
@@ -579,8 +587,10 @@ def anzeige(st):
     """Grosse Zeit und Untertitel der Pille."""
     if st["status"] == "aus":
         return mmss(st["heute_s"]), "heute · Klick startet"
+    if st.get("offen"):
+        return mmss(st["lauf_s"]), (st["titel"] or "Stoppuhr") if st["status"] == "arbeit" else "angehalten"
     if st["faellig"]:
-        return "+" + mmss(-st["rest_s"]), ("Pause vorbei" if st["status"] == "pause" else "Zeit für eine Pause")
+        return "+" + mmss(-st["rest_s"]), ("Pause vorbei" if st["art"] == "pause" else "Zeit für eine Pause")
     return mmss(st["rest_s"]), {"arbeit": st["titel"] or "bis zur Pause", "angehalten": "angehalten",
                                 "pause": "Pause"}[st["status"]]
 
@@ -594,7 +604,7 @@ def hoehe(ui):
 
 def ton(st):
     if st["faellig"]:
-        return TOENE["pause" if st["status"] == "pause" else "faellig"]
+        return TOENE["pause" if st["art"] == "pause" else "faellig"]
     return TOENE[st["status"]]
 
 
@@ -659,10 +669,12 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
     if schein and puls:
         lw.schein(S(ringx), S(ringy), S(70 + 90 * m), a(c1, 46 + 40 * puls), clip=(X0, Y0, X1, Y1, R))
 
-    anteil = 1.0 if st["faellig"] else st["lauf_s"] / max(1, (st["pause_min"] if st["status"] == "pause"
+    anteil = 1.0 if st["faellig"] else st["lauf_s"] / max(1, (st["pause_min"] if st["art"] == "pause"
                                                             else st["ziel_min"]) * 60)
     if st["status"] == "aus":
         anteil = 0.0
+    elif st.get("offen"):
+        anteil = st["lauf_s"] % 3600 / 3600           # Stoppuhr: Ring fuellt sich einmal je Stunde
     gross, klein = anzeige(st)
     fp, gross_alt = ui.get("fp", 1.0), ui.get("gross_alt")
 
@@ -822,7 +834,7 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
         lw.rolle(zx, S(zy + 9), ui.get("wert_alt"), zs, zf, a(WEISS, ein(255)), ui.get("rp", 1.0),
                  ui.get("rdir", 1), S(22))
         lw.text(zx + zf.getlength(zs), S(zy + 9), es, ef, a(GRAU, ein(255)))
-        chips = (5, 10, 15) if pause_tab else (25, 50, 90)
+        chips = (30, 60, 90)
         cw_, gap = 40, 6
         cx0 = Rr - 3 * cw_ - 2 * gap
         tc1 = TOENE["pause" if pause_tab else "arbeit"][0]
@@ -844,7 +856,8 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
         ea = reihe(y0 + 258)
         by0, by1 = y0 + 216, y0 + 258
         text, art = primaer(st, ui["tab"])
-        an = zone("primaer", L, by0, Rr - 54, by1)
+        pr = Rr - 100                       # rechts davon: Stoppuhr, Stopp
+        an = zone("primaer", L, by0, pr, by1)
         if art == "neutral":
             fuell, schrift_farbe = a(WEISS, ein(36 if an else 22)), a(WEISS, ein(255))
         else:
@@ -853,12 +866,19 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
             fuell = a(tuple(min(255, int(c * hell)) for c in tc), ein(255))
             schrift_farbe = a((8, 8, 10) if art == "arbeit" else WEISS, ein(255))
         g_ = gr("primaer")
-        bw, bh = (Rr - 54 - L) * (1 - g_) / 2, (by1 - by0) * (1 - g_) / 2
-        lw.box(S(L + bw), S(by0 + bh), S(Rr - 54 - bw), S(by1 - bh), S(14), fuell)
-        lw.rand(S(L + bw), S(by0 + bh), S(Rr - 54 - bw), S(by1 - bh), S(14), 0.22 * ea, 0.0)
-        lw.text(S((L + Rr - 54) / 2), S((by0 + by1) / 2 + 0.5), text, schrift(round(S(14 * g_)), 640),
+        bw, bh = (pr - L) * (1 - g_) / 2, (by1 - by0) * (1 - g_) / 2
+        lw.box(S(L + bw), S(by0 + bh), S(pr - bw), S(by1 - bh), S(14), fuell)
+        lw.rand(S(L + bw), S(by0 + bh), S(pr - bw), S(by1 - bh), S(14), 0.22 * ea, 0.0)
+        lw.text(S((L + pr) / 2), S((by0 + by1) / 2 + 0.5), text, schrift(round(S(14 * g_)), 640),
                 schrift_farbe, "mm")
-        sx, sy = Rr - 21, (by0 + by1) / 2
+        sx, sy = Rr - 67, (by0 + by1) / 2
+        laeuft = st.get("offen") and st["status"] != "aus"
+        an = zone("stoppuhr", sx - 21, sy - 21, sx + 21, sy + 21)
+        g_ = gr("stoppuhr")
+        lw.kreis(S(sx), S(sy), S(21 * g_), a(TOENE["arbeit"][0], ein(255)) if laeuft else a(WEISS, ein(40 if an else 18)))
+        lw.text(S(sx), S(sy), STOPPUHR, symbolschrift(round(S(15 * g_))),
+                a((8, 8, 10), ein(255)) if laeuft else a(WEISS if an else (200, 200, 206), ein(255)), "mm")
+        sx = Rr - 21
         aktiv = st["status"] != "aus"
         an = zone("stopp", sx - 21, sy - 21, sx + 21, sy + 21) and aktiv
         g_ = gr("stopp")
@@ -990,10 +1010,14 @@ def primaer(st, tab):
     """Text und Farbe des Hauptknopfs; Logik dazu in App._primaer."""
     s = st["status"]
     if tab == "pause":
-        return ("Pause beenden", "neutral") if s == "pause" else ("Pause starten", "pause")
+        if s == "pause":
+            return "Anhalten", "neutral"
+        if s == "angehalten" and st["art"] == "pause":
+            return "Weiter", "pause"
+        return "Pause starten", "pause"
     if s == "arbeit":
         return "Anhalten", "neutral"
-    if s == "angehalten":
+    if s == "angehalten" and st["art"] == "arbeit":
         return "Weiter", "arbeit"
     return "Fokus starten", "arbeit"
 
@@ -1252,7 +1276,7 @@ class Spotify:
 
 class Api(BaseHTTPRequestHandler):
     app = None
-    AKTIONEN = ("start", "anhalten", "stop", "pause", "ziel")
+    AKTIONEN = ("start", "stoppuhr", "anhalten", "stop", "pause", "ziel")
 
     def _json(self, data, code=200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -1385,6 +1409,8 @@ class Feder:
 class App:
     def __init__(self):
         try:
+            # ohne SO_REUSEADDR: unter Windows bindet sonst ein zweites Fokus denselben Port, zwei Pillen liegen uebereinander
+            ThreadingHTTPServer.allow_reuse_address = False
             self.server = ThreadingHTTPServer(("127.0.0.1", PORT), Api)
         except OSError:
             sys.exit("Fokus läuft schon (Port belegt).")
@@ -1466,7 +1492,7 @@ class App:
             self.anker = "r" if self.px + CW * self.z / 2 > vx + vw / 2 else "l"
             self._platzieren()
             st = self.timer.stand()
-            self.tab = "pause" if st["status"] == "pause" or (st["faellig"] and st["status"] == "arbeit") \
+            self.tab = "pause" if st["art"] == "pause" and st["status"] != "aus" or (st["faellig"] and st["status"] == "arbeit") \
                 else "fokus"
             self._start("leiste", 0.5)                        # Tagesleiste fuellt sich auf
         self.feder.ziel = 1.0 if auf else 0.0
@@ -1478,6 +1504,8 @@ class App:
         mn = daten.get("minuten")
         if a_ == "start":
             self.timer.start(mn, daten.get("titel"), daten.get("aufgabe_id"))
+        elif a_ == "stoppuhr":
+            self.timer.start(None, daten.get("titel"), daten.get("aufgabe_id"), offen=True)
         elif a_ == "pause":
             self.timer.pause(mn)
         elif a_ == "anhalten":
@@ -1486,7 +1514,7 @@ class App:
             self.timer.stop()
         elif a_ == "ziel" and mn:
             self._zeit_setzen(int(mn), daten.get("art", "fokus"))
-        if a_ in ("start", "pause"):
+        if a_ in ("start", "pause", "stoppuhr"):
             self._klang = False
             self.cfg["ziel_min"], self.cfg["pause_min"] = self.timer.ziel_min, self.timer.pause_min
             speichere_config(self.cfg)
@@ -1504,7 +1532,8 @@ class App:
     def _primaer(self):
         s = self.timer.status
         if self.tab == "pause":
-            self.ausfuehren({"aktion": "stop" if s == "pause" else "pause"})
+            pausiert = s == "pause" or (s == "angehalten" and self.timer.art == "pause")
+            self.ausfuehren({"aktion": "anhalten" if pausiert else "pause"})
         elif s in ("arbeit", "angehalten"):
             self.ausfuehren({"aktion": "anhalten"})
         else:
@@ -1535,12 +1564,12 @@ class App:
         if self.feder.ziel == 0:
             if zone == "aufklappen":
                 self.aufklappen()
-            elif self.timer.status in ("arbeit", "angehalten"):
+            elif self.timer.status in ("arbeit", "pause", "angehalten"):
                 self.ausfuehren({"aktion": "anhalten"})
             else:
                 self.ausfuehren({"aktion": "start"})
             return
-        schritt = 1 if self.tab == "pause" else 5
+        schritt = 5
         wert = self.timer.pause_min if self.tab == "pause" else self.timer.ziel_min
         if zone == "zuklappen":
             self.aufklappen(False)
@@ -1556,6 +1585,8 @@ class App:
             self._primaer()
         elif zone == "stopp":
             self.ausfuehren({"aktion": "stop"})
+        elif zone == "stoppuhr" and not (self.timer.offen and self.timer.status != "aus"):
+            self.ausfuehren({"aktion": "stoppuhr"})
 
     # --- Maus ---
     def _treffer(self, x, y):
@@ -1594,7 +1625,7 @@ class App:
             if v is not None:
                 self.spotify.befehl("lautstaerke", v + (0.05 if e.delta > 0 else -0.05))
         elif self.feder.ziel == 1:
-            schritt = (1 if self.tab == "pause" else 5) * (1 if e.delta > 0 else -1)
+            schritt = 5 * (1 if e.delta > 0 else -1)
             wert = self.timer.pause_min if self.tab == "pause" else self.timer.ziel_min
             self._zeit_setzen(wert + schritt, self.tab)
 
@@ -1625,7 +1656,7 @@ class App:
             return self._laut_aus_x(e.x)
         if self._druck and self._druck[0] == "zeit":
             _, x0, wert = self._druck
-            schritt = 1 if self.tab == "pause" else 5
+            schritt = 5
             return self._zeit_setzen(wert + round((e.x - x0) / (6 * self.z)) * schritt, self.tab)
         if not self._druck:
             return
@@ -1740,7 +1771,7 @@ class App:
                 self._start("rolle", 0.22)
             else:
                 self._wert_alt = None
-            chips = (5, 10, 15) if pause_tab else (25, 50, 90)
+            chips = (30, 60, 90)
             if wert in chips:
                 self.cfeder.ziel, self.cafeder.ziel = chips.index(wert) / 2, 1.0
                 if not gleich or self.cafeder.x < 0.05:   # neu auftauchen: springen statt gleiten
