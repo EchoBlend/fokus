@@ -69,6 +69,19 @@ def main():
     assert not t.offen and json.loads(tmp.read_text("utf-8").splitlines()[-1])["art"] == "arbeit"
     tmp.write_text("\n".join(tmp.read_text("utf-8").splitlines()[:-1]) + "\n", "utf-8")
 
+    # Pausen-Stoppuhr: zaehlt hoch, nie faellig, anhaltbar, landet als Pausenblock
+    t.pause(offen=True)
+    uhr.t += 5000
+    s = t.stand()
+    assert s["offen"] and s["art"] == "pause" and not s["faellig"] and anzeige(s) == ("1:23:20", "Pause"), s
+    t.anhalten()
+    assert anzeige(t.stand()) == ("1:23:20", "angehalten")
+    t.anhalten()
+    assert t.status == "pause" and t.offen
+    t.stop()
+    assert json.loads(tmp.read_text("utf-8").splitlines()[-1])["art"] == "pause"
+    tmp.write_text("\n".join(tmp.read_text("utf-8").splitlines()[:-2]) + "\n", "utf-8")
+
     # neuer Timer liest den Tag aus der Ablage
     assert Timer(tmp, uhr).stand()["heute_s"] == 75
     assert mmss(75) == "1:15" and mmss(3725) == "1:02:05"

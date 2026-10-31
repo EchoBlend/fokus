@@ -6,7 +6,7 @@ Bloecke landen in %APPDATA%\\Fokus\\bloecke.jsonl. Lokale HTTP-Schnittstelle fue
 
   GET  http://127.0.0.1:47650/stand
   POST http://127.0.0.1:47650/timer  {"aktion": "start|stoppuhr|anhalten|stop|pause|ziel", "minuten": 50, "titel": "..."}
-                                    (stoppuhr = zaehlt ohne Ziel nach oben)
+                                    (stoppuhr = zaehlt ohne Ziel nach oben; "art": "pause" = Pausen-Stoppuhr)
   POST http://127.0.0.1:47650/spotify {"cmd": "playpause|weiter|zurueck|lautstaerke|favorit", "wert": 0.4}
 
 Spotify laeuft im Chrome-Tab; die Erweiterung in chrome-ext/ verbindet sich per
@@ -38,7 +38,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.9"
+VERSION = "0.2.10"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -99,12 +99,12 @@ class Timer:
             self.titel, self.aufgabe_id = titel, aufgabe_id
         self.gesammelt, self.seit, self.status, self.art = 0.0, self.uhr(), "arbeit", "arbeit"
 
-    def pause(self, minuten=None):
+    def pause(self, minuten=None, offen=False):
         if self.status in ("arbeit", "pause"):
             self._block_schliessen()
         if minuten:
             self.pause_min = int(minuten)
-        self.offen = False
+        self.offen = offen
         self.gesammelt, self.seit, self.status, self.art = 0.0, self.uhr(), "pause", "pause"
 
     def anhalten(self):
@@ -588,7 +588,8 @@ def anzeige(st):
     if st["status"] == "aus":
         return mmss(st["heute_s"]), "heute · Klick startet"
     if st.get("offen"):
-        return mmss(st["lauf_s"]), (st["titel"] or "Stoppuhr") if st["status"] == "arbeit" else "angehalten"
+        return mmss(st["lauf_s"]), {"arbeit": st["titel"] or "Stoppuhr", "pause": "Pause",
+                                    "angehalten": "angehalten"}[st["status"]]
     if st["faellig"]:
         return "+" + mmss(-st["rest_s"]), ("Pause vorbei" if st["art"] == "pause" else "Zeit für eine Pause")
     return mmss(st["rest_s"]), {"arbeit": st["titel"] or "bis zur Pause", "angehalten": "angehalten",
@@ -872,10 +873,10 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
         lw.text(S((L + pr) / 2), S((by0 + by1) / 2 + 0.5), text, schrift(round(S(14 * g_)), 640),
                 schrift_farbe, "mm")
         sx, sy = Rr - 67, (by0 + by1) / 2
-        laeuft = st.get("offen") and st["status"] != "aus"
+        laeuft = st.get("offen") and st["status"] != "aus" and st["art"] == ("pause" if ui["tab"] == "pause" else "arbeit")
         an = zone("stoppuhr", sx - 21, sy - 21, sx + 21, sy + 21)
         g_ = gr("stoppuhr")
-        lw.kreis(S(sx), S(sy), S(21 * g_), a(TOENE["arbeit"][0], ein(255)) if laeuft else a(WEISS, ein(40 if an else 18)))
+        lw.kreis(S(sx), S(sy), S(21 * g_), a(TOENE[st["art"]][0], ein(255)) if laeuft else a(WEISS, ein(40 if an else 18)))
         lw.text(S(sx), S(sy), STOPPUHR, symbolschrift(round(S(15 * g_))),
                 a((8, 8, 10), ein(255)) if laeuft else a(WEISS if an else (200, 200, 206), ein(255)), "mm")
         sx = Rr - 21
@@ -1504,6 +1505,8 @@ class App:
         mn = daten.get("minuten")
         if a_ == "start":
             self.timer.start(mn, daten.get("titel"), daten.get("aufgabe_id"))
+        elif a_ == "stoppuhr" and daten.get("art") == "pause":
+            self.timer.pause(offen=True)
         elif a_ == "stoppuhr":
             self.timer.start(None, daten.get("titel"), daten.get("aufgabe_id"), offen=True)
         elif a_ == "pause":
@@ -1585,8 +1588,9 @@ class App:
             self._primaer()
         elif zone == "stopp":
             self.ausfuehren({"aktion": "stop"})
-        elif zone == "stoppuhr" and not (self.timer.offen and self.timer.status != "aus"):
-            self.ausfuehren({"aktion": "stoppuhr"})
+        elif zone == "stoppuhr" and not (self.timer.offen and self.timer.status != "aus"
+                                          and self.timer.art == ("pause" if self.tab == "pause" else "arbeit")):
+            self.ausfuehren({"aktion": "stoppuhr", "art": self.tab})
 
     # --- Maus ---
     def _treffer(self, x, y):
