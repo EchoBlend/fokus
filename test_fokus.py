@@ -13,6 +13,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 
+import numpy as np
 from PIL import Image
 
 from fokus import CW, EW, M, TOENE, VERSION, Api, App, primaer, ton, Spotify, Timer, lrc_zeilen, mmss, zeilen_teilen, zeichnen, zeile_bei
@@ -103,6 +104,14 @@ def main():
     assert abs(knopf[3] - (M + EW - 6)) < 2, knopf
     assert CW < EW
     assert {"cover", "aufklappen"} <= {z[0] for z in zonen}
+    # Songwechsel in der kleinen Pille: nur ueberblenden, der Cover-Umriss bleibt stehen (sonst zittert er)
+    cz = next(z for z in zonen if z[0] == "cover")
+    bunt = lambda b: np.argwhere(np.ptp(b[int(cz[2]):int(cz[4]), int(cz[1]) - 20:int(cz[3]) + 20, :3], axis=2) > 60)
+    rot, blau = Image.new("RGB", (64, 64), (220, 30, 30)), Image.new("RGB", (64, 64), (30, 30, 220))
+    ruhe = bunt(zeichnen(t.stand(), dict(ui, m=0.0), 1.0, blau)[0])
+    for cp in (0.3, 0.6):
+        mitten = bunt(zeichnen(t.stand(), dict(ui, m=0.0, cp=cp), 1.0, blau, rot)[0])
+        assert (mitten.min(0) == ruhe.min(0)).all() and (mitten.max(0) == ruhe.max(0)).all(), (cp, mitten.min(0), ruhe.min(0))
     _, zonen = zeichnen(t.stand(), dict(ui, m=1.0), 1.0)
     assert {"playpause", "weiter", "zurueck", "lautstaerke"} <= {z[0] for z in zonen}
     # Favorit: Herz-Zone nur, wenn der Tab das Herz kennt; Hover malt das Herz aufs Cover

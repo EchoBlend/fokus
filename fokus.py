@@ -38,7 +38,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.10"
+VERSION = "0.2.11"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -679,14 +679,15 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
     gross, klein = anzeige(st)
     fp, gross_alt = ui.get("fp", 1.0), ui.get("gross_alt")
 
-    def cover_bild(kx, ky, kg, rad, alpha):
-        """Cover-Wechsel wie bjork-now-playing-card: altes gleitet raus, neues 24 px herein, 0.92 -> 1."""
-        cp, d = ui.get("cp", 1.0), ui.get("cdir", 1)
+    def cover_bild(kx, ky, kg, rad, alpha, gleiten=True):
+        """Cover-Wechsel wie bjork-now-playing-card: altes gleitet raus, neues 24 px herein, 0.92 -> 1.
+        gleiten=False: nur ueberblenden — beim kleinen Cover zappelt der Umriss sonst sichtbar hin und her."""
+        cp, d = ui.get("cp", 1.0), ui.get("cdir", 1) if gleiten else 0
         teile = [(cover, cp, 24 * d * (1 - cp))]
         if cp < 1 and cover_alt is not None:
             teile.insert(0, (cover_alt, 1 - cp, -24 * d * cp))
         for bild_, al, dx in teile:
-            sk = 0.92 + 0.08 * al
+            sk = 0.92 + 0.08 * al if gleiten else 1.0
             g_ = kg * sk
             bx_, by_ = kx + (kg - g_) / 2 + dx * kg / 72, ky + (kg - g_) / 2
             if bild_ is not None:
@@ -723,7 +724,7 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
             spielt = mu.get("spielt")
             g_ = gr("cover")
             cover_bild(kx + kg * (1 - g_) / 2, ky + kg * (1 - g_) / 2, kg * g_, 7,
-                       ca * (1.0 if spielt and not an else 0.45))
+                       ca * (1.0 if spielt and not an else 0.45), gleiten=False)
             if an or not spielt or cover is None:
                 musik_symbol(lw, S, kx + kg / 2, ky + kg / 2, 5.5, spielt, a(WEISS, 235 * ca))
             if hv > 0.5 and mu.get("favorit") is not None:     # kleines Herz unten rechts am Cover
