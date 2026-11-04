@@ -14,11 +14,14 @@ Bauen: `powershell -ExecutionPolicy Bypass -File build.ps1` (Tests, Fokus.exe, S
 - Klick auf die Pille: Timer starten / anhalten. Ziehen: verschieben.
 - Pfeil rechts: Panel mit Fokus/Pause, freier Zeit (−/+, Mausrad, 25/50/90), Heute-Leiste, Musikkarte.
 - Hover über der Pille: zurück / Play-Pause / weiter. Mausrad: Spotify-Lautstärke.
+- Klick auf die Heute-Leiste (oder Infobereich → „Auswertung“): Auswertungsfenster neben der Pille (Chrome-App-Fenster, sonst Edge InPrivate) mit Tag, Woche, Monat und Zeitraum (7/10/14/30 Tage); ← → blättert, T = heute, 1–4 = Ansicht. Arbeitstag wechselt um 4 Uhr; Lücken bis 90 min zwischen Blöcken zählen als Pause. Tagesziel für die Ringe: `tagesziel_h` in `config.json` (Standard 6).
 
 ## Schnittstelle (nur 127.0.0.1)
 
 ```
 GET  http://127.0.0.1:47650/stand
+GET  http://127.0.0.1:47650/tage        (je Arbeitstag: Arbeit, Pausen, Blöcke, Verteilung über den Tag)
+GET  http://127.0.0.1:47650/auswertung  (Auswertungsseite)
 POST http://127.0.0.1:47650/timer    {"aktion": "start|anhalten|stop|pause|ziel", "minuten": 50, "titel": "..."}
 POST http://127.0.0.1:47650/spotify  {"cmd": "playpause|weiter|zurueck|lautstaerke", "wert": 0.4}
 ```

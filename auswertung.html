@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Fokus · Auswertung</title>
+<meta name="theme-color" content="#101013">
+<meta name="color-scheme" content="dark">
+<style>
+:root {
+  --grund: #101013; --karte: rgba(255,255,255,.045); --linie: rgba(255,255,255,.08);
+  --weiss: #f5f5f7; --grau: #8e8e96; --grau2: #7d7d85;
+  --gruen: #30d158; --gruen2: #acf082; --blau: #0a84ff; --blau2: #64d2ff; --orange: #ff9f0a;
+  --ease: cubic-bezier(.22,1,.36,1); --feder: cubic-bezier(.34,1.3,.64,1);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; margin: 0; padding: 0 }
+html, body { height: 100% }
+body {
+  background: var(--grund); color: var(--weiss); overflow: hidden; user-select: none;
+  font: 13px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  display: flex; flex-direction: column; gap: 14px; padding: 16px 20px 20px;
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; outline: none }
+button:focus-visible { box-shadow: 0 0 0 2px rgba(255,255,255,.35) }
+.zahl { font-variant-numeric: tabular-nums }
+.display { font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif }
+
+/* Kopf */
+.kopf { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px }
+.ueber { color: var(--grau); font-size: 11.5px; font-weight: 520; margin-bottom: 2px }
+.nav { display: flex; align-items: center; gap: 6px }
+.titel { font-size: 22px; font-weight: 650; letter-spacing: -.2px; min-width: 0; white-space: nowrap; view-transition-name: titel }
+.rund { width: 28px; height: 28px; border-radius: 14px; display: grid; place-items: center; color: #c8c8ce;
+  transition: background .15s, transform .2s var(--ease), opacity .2s }
+.rund:hover { background: rgba(255,255,255,.08); color: var(--weiss) }
+.rund:active { transform: scale(.9) }
+.rund:disabled { opacity: .25; pointer-events: none }
+.rund svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round }
+.nav .rund:first-of-type { margin-left: 6px }
+.chip { height: 24px; padding: 0 10px; border-radius: 12px; background: rgba(255,255,255,.07); color: #d4d4da;
+  font-size: 11.5px; font-weight: 560; transition: background .15s, transform .2s var(--ease), opacity .25s var(--ease), color .15s }
+.chip:hover { background: rgba(255,255,255,.12); color: var(--weiss) }
+.chip:active { transform: scale(.94) }
+#heute { margin-left: 4px }
+#heute.weg { opacity: 0; transform: scale(.9); pointer-events: none }
+.rechts { display: flex; flex-direction: column; align-items: flex-end; gap: 8px }
+.seg { position: relative; display: flex; padding: 3px; border-radius: 11px; background: rgba(255,255,255,.06) }
+.seg button { position: relative; z-index: 1; height: 28px; padding: 0 13px; border-radius: 8px; font-size: 12.5px; font-weight: 560;
+  color: var(--grau); transition: color .2s }
+.seg button:hover { color: #d4d4da }
+.seg button.an { color: var(--weiss) }
+.seg button:active { transform: scale(.96) }
+.ind { position: absolute; top: 3px; left: 0; height: 28px; border-radius: 8px; background: rgba(255,255,255,.13);
+  box-shadow: 0 1px 2px rgba(0,0,0,.4), inset 0 .5px 0 rgba(255,255,255,.12);
+  transition: transform .38s var(--feder), width .38s var(--feder) }
+.ind.still { transition: none }
+.spannen { display: flex; align-items: center; gap: 4px; transition: opacity .25s var(--ease), transform .3s var(--ease) }
+.spannen.weg { opacity: 0; transform: translateY(-4px); pointer-events: none }
+.spannen span { color: var(--grau); font-size: 11.5px; margin-left: 4px }
+.spannen .chip.an { background: var(--weiss); color: #101013 }
+
+/* Inhalt */
+main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 236px; gap: 14px }
+.karte { background: var(--karte); border: 1px solid var(--linie); border-radius: 18px }
+#haupt { position: relative; min-height: 0; padding: 14px 14px 12px; display: flex; flex-direction: column; overflow: hidden; view-transition-name: haupt }
+.legende { display: flex; gap: 14px; justify-content: center; color: var(--grau); font-size: 10.5px; padding-top: 10px }
+.legende i { display: inline-block; width: 7px; height: 7px; border-radius: 4px; margin-right: 5px; vertical-align: 0 }
+.punkt-a { background: var(--gruen) } .punkt-p { background: var(--blau) }
+
+/* Monat: Ringe je Tag */
+.wt { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; text-align: center; color: var(--grau); font-size: 11px; font-weight: 560; padding-bottom: 6px }
+.raster { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(7, 1fr); grid-template-rows: repeat(var(--zeilen), 1fr); gap: 4px 6px }
+.zelle { position: relative; border-radius: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  transition: background .15s, transform .2s var(--ease) }
+.zelle:hover { background: rgba(255,255,255,.055) }
+.zelle:active { transform: scale(.94) }
+.zelle.zuk { pointer-events: none }
+.ringbox { position: relative; width: 36px; height: 36px; transition: transform .3s var(--feder) }
+.zelle:hover .ringbox { transform: scale(1.07) }
+.ring { width: 36px; height: 36px; transform: rotate(-90deg); overflow: visible }
+.ring circle { fill: none; stroke-width: 4.4 }
+.spur { stroke: rgba(255,255,255,.075) }
+.zuk .spur { stroke: rgba(255,255,255,.035) }
+.wert { stroke: url(#gr); stroke-linecap: round; stroke-dasharray: 100.53; stroke-dashoffset: var(--o) }
+.voll .ring { filter: drop-shadow(0 0 5px rgba(48,209,88,.55)) }
+.nr { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; font-weight: 600; color: #d8d8de }
+.zuk .nr { color: var(--grau2) }
+.heute .nr { color: var(--weiss); font-weight: 720 }
+.zelle.heute::after { content: ""; position: absolute; inset: 0; border-radius: 12px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.2) }
+.zelle .h { font-size: 10.5px; color: var(--grau); height: 13px }
+.ein .wert { animation: ring 1s var(--ease) both; animation-delay: calc(var(--i) * 12ms + 60ms) }
+@keyframes ring { from { stroke-dashoffset: 100.53 } }
+.ein .zelle { animation: auf .4s var(--ease) both; animation-delay: calc(var(--i) * 8ms) }
+@keyframes auf { from { opacity: 0; transform: translateY(5px) } }
+
+/* Woche: Zeitachse */
+.woche { flex: 1; min-height: 0; display: grid; grid-template-columns: 28px repeat(7, 1fr); grid-template-rows: auto 1fr auto; column-gap: 5px }
+.wk-t { text-align: center; padding-bottom: 8px; border-radius: 10px; cursor: pointer }
+.wk-t span { display: block; color: var(--grau); font-size: 11px; font-weight: 560 }
+.wk-t b { display: inline-grid; place-items: center; min-width: 24px; height: 22px; padding: 0 5px; border-radius: 11px; font-size: 13px; font-weight: 620; transition: background .15s }
+.wk-t:hover b { background: rgba(255,255,255,.08) }
+.wk-t.heute b { background: var(--weiss); color: #101013 }
+.achse { position: relative }
+.achse span { position: absolute; right: 2px; transform: translateY(-50%); font-size: 10px; color: var(--grau2) }
+.spalte { position: relative; border-radius: 8px; cursor: pointer; transition: background .15s;
+  background-image: linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px); background-size: 100% var(--std); background-position: 0 var(--ver) }
+.spalte:hover { background-color: rgba(255,255,255,.035) }
+.spalte.heute { background-color: rgba(255,255,255,.022) }
+.blk { position: absolute; left: 3px; right: 3px; min-height: 3px; border-radius: 5px; transform-origin: top;
+  background: linear-gradient(180deg, #3fdc6a, var(--gruen)); box-shadow: inset 0 .5px 0 rgba(255,255,255,.35) }
+.blk:hover { filter: brightness(1.15) }
+.blk.p { left: 38%; right: 38%; background: rgba(10,132,255,.55); box-shadow: none; border-radius: 3px }
+.ein .blk { animation: blk .55s var(--ease) both; animation-delay: calc(var(--i) * 35ms + 40ms) }
+@keyframes blk { from { transform: scaleY(0); opacity: 0 } }
+.jetzt { position: absolute; left: -2px; right: -2px; height: 1.5px; background: var(--orange); border-radius: 1px; pointer-events: none }
+.jetzt::before { content: ""; position: absolute; left: -3px; top: -2.5px; width: 6.5px; height: 6.5px; border-radius: 4px; background: var(--orange) }
+.wk-f { text-align: center; padding-top: 8px; font-size: 11px; color: var(--grau) }
+.wk-f.mit { color: #d8d8de; font-weight: 560 }
+
+/* Tag: Stunden-Pillen + Zeitstrahl */
+.tag { flex: 1; min-height: 0; display: flex; flex-direction: column }
+.stufen { display: flex; gap: 3px }
+.std { position: relative; flex: 1; height: 24px; border-radius: 6px; background: rgba(255,255,255,.035); overflow: hidden; transform-origin: center }
+.std.vorbei { background: rgba(255,255,255,.065) }
+.std.jetzt-h { box-shadow: inset 0 0 0 1px rgba(255,255,255,.45) }
+.std i { position: absolute; top: 0; bottom: 0; min-width: 2px }
+.std .fa { background: linear-gradient(180deg, #3fdc6a, var(--gruen)) }
+.std .fp { background: rgba(10,132,255,.75) }
+.ein .std { animation: stufe .5s var(--ease) both; animation-delay: calc(var(--i) * 22ms) }
+@keyframes stufe { from { transform: scaleY(.25); opacity: 0 } }
+.std-lab { display: flex; gap: 3px; margin-top: 5px }
+.std-lab span { flex: 1; font-size: 10px; color: var(--grau2) }
+.agenda { list-style: none; margin-top: 14px; overflow: auto; flex: 1; min-height: 0; padding-right: 4px }
+.agenda::-webkit-scrollbar { width: 8px }
+.agenda::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 4px; border: 2px solid transparent; background-clip: content-box }
+.ev { display: grid; grid-template-columns: 42px 22px 1fr; min-height: 40px }
+.ev .z { font-size: 11.5px; color: var(--grau); text-align: right; padding-top: 1px }
+.ev .p { position: relative }
+.ev .p::before { content: ""; position: absolute; left: 50%; top: 5px; width: 9px; height: 9px; margin-left: -4.5px; border-radius: 5px; background: var(--gruen);
+  box-shadow: 0 0 0 3px rgba(48,209,88,.16) }
+.ev .p::after { content: ""; position: absolute; left: 50%; top: 18px; bottom: -4px; width: 1.5px; margin-left: -.75px; background: rgba(255,255,255,.1) }
+.ev:last-child .p::after { display: none }
+.ev .c b { font-size: 13px; font-weight: 620; margin-right: 6px }
+.ev .c span { color: var(--grau); font-size: 11.5px }
+.ev.pause, .ev.frei { min-height: 30px }
+.ev.pause .p::before { width: 6px; height: 6px; margin-left: -3px; top: 6px; background: var(--blau); box-shadow: none }
+.ev.pause .c { color: var(--blau2); font-size: 11.5px; opacity: .9 }
+.ev.frei .p::before { display: none }
+.ev.frei .p::after { top: -4px; background: repeating-linear-gradient(rgba(255,255,255,.16) 0 3px, transparent 3px 7px) }
+.ev.frei .c { color: var(--grau2); font-size: 11.5px; padding-top: 4px }
+.ev.ende .p::before { background: transparent; box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.4) }
+.ev.ende .c { color: var(--grau); font-size: 11.5px; padding-top: 1px }
+.ev.lauf .p::before { animation: puls 1.6s ease-in-out infinite }
+@keyframes puls { 50% { box-shadow: 0 0 0 6px rgba(48,209,88,0) } 0%, 100% { box-shadow: 0 0 0 0 rgba(48,209,88,.45) } }
+.ein .ev { animation: auf .45s var(--ease) both; animation-delay: calc(var(--i) * 30ms + 120ms) }
+.leer { flex: 1; display: grid; place-content: center; justify-items: center; gap: 10px; color: var(--grau); font-size: 12.5px }
+.leer .ring { width: 46px; height: 46px }
+
+/* Zeitraum: Balken */
+.balken { flex: 1; min-height: 0; display: grid; grid-template-rows: 1fr auto }
+.plot { position: relative; margin-right: 34px; margin-top: 8px }
+.gl { position: absolute; left: 0; right: -34px; height: 0; border-top: 1px solid rgba(255,255,255,.06) }
+.gl span { position: absolute; right: 0; top: -7px; font-size: 10px; color: var(--grau2) }
+.saeulen { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(var(--n), 1fr); gap: 4px }
+.sp { position: relative; display: flex; align-items: flex-end; justify-content: center; border-radius: 6px; cursor: pointer; transition: background .15s }
+.sp:hover { background: rgba(255,255,255,.04) }
+.bar { width: min(26px, 72%); display: flex; flex-direction: column; border-radius: 6px 6px 3px 3px; overflow: hidden; transform-origin: bottom; min-height: 0 }
+.bar .bp { background: rgba(10,132,255,.42) }
+.bar .ba { background: linear-gradient(180deg, var(--gruen2), var(--gruen) 60%) }
+.sp.heute .bar .ba { box-shadow: inset 0 0 0 1px rgba(255,255,255,.35) }
+.ein .bar { animation: wachsen .65s var(--ease) both; animation-delay: calc(var(--i) * 22ms + 40ms) }
+@keyframes wachsen { from { transform: scaleY(0) } }
+.avg { position: absolute; left: 0; right: -34px; border-top: 1px dashed rgba(255,255,255,.38); pointer-events: none }
+.avg span { position: absolute; right: 0; top: -9px; font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 6px; background: #2a2a2f; color: #e0e0e6 }
+.ein .avg { animation: blende .5s var(--ease) both .45s }
+@keyframes blende { from { opacity: 0 } }
+.xl { display: grid; grid-template-columns: repeat(var(--n), 1fr); gap: 4px; margin-right: 34px; padding-top: 6px }
+.xl span { text-align: center; font-size: 10px; color: var(--grau); line-height: 1.25 }
+.xl span b { display: block; font-weight: 600; color: #cfcfd5; font-size: 10.5px }
+.xl span.heute b { color: var(--gruen) }
+
+/* Kennzahlen */
+.seite { display: flex; flex-direction: column; gap: 10px; min-height: 0 }
+.liste { padding: 4px 16px }
+.kz { padding: 10px 0; border-bottom: 1px solid var(--linie) }
+.kz:last-child { border-bottom: 0 }
+.kz .l { color: var(--grau); font-size: 11.5px; font-weight: 520 }
+.kz .w { font-size: 21px; font-weight: 650; letter-spacing: -.2px; line-height: 1.2; margin-top: 1px }
+.kz .u { color: var(--grau); font-size: 11px; margin-top: 1px; min-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.delta { display: inline-block; padding: 0 6px; border-radius: 7px; font-weight: 620; margin-right: 5px; background: rgba(255,255,255,.08); color: #cfcfd5 }
+.delta.hoch { background: rgba(48,209,88,.16); color: var(--gruen) }
+.verteilung { padding: 12px 16px 12px; flex: 1; min-height: 120px; display: flex; flex-direction: column }
+.mini { flex: 1; min-height: 40px; display: flex; align-items: flex-end; gap: 2px; margin-top: 10px }
+.mini i { flex: 1; height: 100%; border-radius: 2px; background: rgba(255,255,255,.2); transform-origin: bottom; transform: scaleY(var(--s));
+  transition: transform .6s var(--ease), background .3s }
+.mini i.spitze { background: var(--gruen) }
+.mini-lab { display: flex; justify-content: space-between; color: var(--grau2); font-size: 10px; margin-top: 4px }
+
+/* Tooltip, Status */
+.tip { position: fixed; z-index: 9; pointer-events: none; padding: 7px 10px; border-radius: 10px; background: rgba(44,44,50,.96);
+  border: 1px solid rgba(255,255,255,.1); box-shadow: 0 8px 24px rgba(0,0,0,.45); font-size: 11.5px; white-space: pre-line; line-height: 1.45;
+  opacity: 0; transform: translateY(4px) scale(.98); transition: opacity .14s, transform .2s var(--ease) }
+.tip.an { opacity: 1; transform: none }
+.tip::first-line { font-weight: 620 }
+.status { position: fixed; left: 20px; bottom: 4px; font-size: 10.5px; color: var(--orange) }
+
+/* Wechsel zwischen Monaten/Ansichten (View Transitions) */
+::view-transition-old(root), ::view-transition-new(root) { animation: none }
+::view-transition-group(haupt), ::view-transition-group(titel) { animation-duration: .34s; animation-timing-function: var(--ease) }
+@keyframes raus-l { to { opacity: 0; transform: translateX(-22px) } }
+@keyframes raus-r { to { opacity: 0; transform: translateX(22px) } }
+@keyframes rein-l { from { opacity: 0; transform: translateX(-22px) } }
+@keyframes rein-r { from { opacity: 0; transform: translateX(22px) } }
+@keyframes raus-o { to { opacity: 0; transform: translateY(-8px) } }
+@keyframes rein-u { from { opacity: 0; transform: translateY(8px) } }
+@keyframes zoom-raus { to { opacity: 0; transform: scale(1.03) } }
+@keyframes zoom-rein { from { opacity: 0; transform: scale(.97) } }
+html[data-r=vor]::view-transition-old(haupt) { animation: .2s var(--ease) both raus-l }
+html[data-r=vor]::view-transition-new(haupt) { animation: .36s var(--ease) both rein-r }
+html[data-r=zurueck]::view-transition-old(haupt) { animation: .2s var(--ease) both raus-r }
+html[data-r=zurueck]::view-transition-new(haupt) { animation: .36s var(--ease) both rein-l }
+html[data-r]::view-transition-old(titel) { animation: .18s var(--ease) both raus-o }
+html[data-r]::view-transition-new(titel) { animation: .32s var(--ease) both rein-u }
+html[data-r=ansicht]::view-transition-old(haupt) { animation: .18s var(--ease) both zoom-raus }
+html[data-r=ansicht]::view-transition-new(haupt) { animation: .34s var(--ease) both zoom-rein }
+::view-transition-group(haupt), ::view-transition-group(titel) { animation: none }
+::view-transition-image-pair(haupt) { isolation: auto }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important }
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="gr" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#30d158"/><stop offset="1" stop-color="#acf082"/></linearGradient>
+</defs></svg>
+
+<header class="kopf">
+  <div>
+    <div class="ueber">Fokus · Auswertung</div>
+    <div class="nav">
+      <div id="titel" class="titel display"></div>
+      <button class="rund" id="zurueck" aria-label="Zurück" title="Zurück (←)"><svg viewBox="0 0 16 16"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg></button>
+      <button class="rund" id="vor" aria-label="Weiter" title="Weiter (→)"><svg viewBox="0 0 16 16"><path d="M6 3.5 10.5 8 6 12.5"/></svg></button>
+      <button class="chip" id="heute" title="Heute (T)">Heute</button>
+    </div>
+  </div>
+  <div class="rechts">
+    <div class="seg" id="ansicht" role="tablist">
+      <span class="ind still"></span>
+      <button data-v="tag">Tag</button><button data-v="woche">Woche</button><button data-v="monat">Monat</button><button data-v="zeitraum">Zeitraum</button>
+    </div>
+    <div class="spannen weg" id="spannen">
+      <button class="chip" data-n="7">7</button><button class="chip" data-n="10">10</button><button class="chip" data-n="14">14</button><button class="chip" data-n="30">30</button><span>Tage</span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section id="haupt" class="karte"></section>
+  <aside class="seite">
+    <div class="karte liste">
+      <div class="kz"><div class="l">Arbeit</div><div class="w zahl display" id="w-arbeit">–</div><div class="u" id="u-arbeit"></div></div>
+      <div class="kz"><div class="l" id="l-schnitt">Ø pro Arbeitstag</div><div class="w zahl display" id="w-schnitt">–</div><div class="u" id="u-schnitt"></div></div>
+      <div class="kz"><div class="l">Pausen</div><div class="w zahl display" id="w-pause">–</div><div class="u" id="u-pause"></div></div>
+      <div class="kz"><div class="l">Arbeitszeit</div><div class="w zahl display" id="w-zeit">–</div><div class="u" id="u-zeit"></div></div>
+      <div class="kz"><div class="l">Längster Block</div><div class="w zahl display" id="w-lang">–</div><div class="u" id="u-lang"></div></div>
+    </div>
+    <div class="karte verteilung">
+      <div class="kz" style="padding:0;border:0"><div class="l">Wann du arbeitest</div><div class="u" id="u-spitze" style="color:#d8d8de"></div></div>
+      <div class="mini" id="mini"></div>
+      <div class="mini-lab"><span>4</span><span>8</span><span>12</span><span>16</span><span>20</span><span>0</span><span>4</span></div>
+    </div>
+  </aside>
+</main>
+<div class="tip" id="tip"></div>
+<div class="status" id="status"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const WT = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+const U = 2 * Math.PI * 16;                       // Ringumfang (r = 16)
+const LEER = { arbeit_s: 0, pause_s: 0, beginn_h: null, ende_h: null, bloecke: [], pausen: [], stunden: Array(24).fill(0) };
+const f = (o) => new Intl.DateTimeFormat("de-DE", o);
+const F_WT = f({ weekday: "long" }), F_WTK = f({ weekday: "short" }), F_MON = f({ month: "long" }), F_MONK = f({ month: "short" });
+
+let D = { tage: {}, heute: null, jetzt_h: 0, laeuft: false, ziel_h: 6, tag_beginn_h: 4 };
+let HEUTE = iso(new Date());
+const S = { ansicht: "monat", n: 10, anker: null };
+
+// --- Datum ---
+function iso(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` }
+function vonIso(s) { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d) }
+function plus(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x }
+function montag(d) { return plus(d, -((d.getDay() + 6) % 7)) }
+function bereich(d0, n) { return Array.from({ length: n }, (_, i) => plus(d0, i)) }
+function kw(d) {                                   // ISO-Kalenderwoche
+  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7));
+  return Math.ceil(((t - Date.UTC(t.getUTCFullYear(), 0, 1)) / 864e5 + 1) / 7);
+}
+const tag = d => D.tage[iso(d)] || LEER;
+const kurzDatum = d => `${F_WTK.format(d)}, ${d.getDate()}. ${F_MONK.format(d)}`;
+
+// --- Formate (wie stunden() in fokus.py) ---
+function dauer(s, kurz) {
+  s = Math.max(0, Math.round(s));
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60;
+  if (kurz) return `${h}:${String(m).padStart(2, "0")}`;
+  return s >= 3600 ? `${h}:${String(m).padStart(2, "0")} h` : `${Math.floor(s / 60)} min`;
+}
+function uhr(h) { const m = Math.round(h * 60); return `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}` }
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]) }
+
+// --- Zeitraum der Ansicht ---
+function spanne() {
+  const a = S.anker;
+  if (S.ansicht === "tag") return { tage: [a], vorher: [plus(a, -1)], wort: "zum Vortag" };
+  if (S.ansicht === "woche") { const m = montag(a); return { tage: bereich(m, 7), vorher: bereich(plus(m, -7), 7), wort: "zur Vorwoche" } }
+  if (S.ansicht === "monat") {
+    const y = a.getFullYear(), mo = a.getMonth();
+    return { tage: bereich(new Date(y, mo, 1), new Date(y, mo + 1, 0).getDate()),
+             vorher: bereich(new Date(y, mo - 1, 1), new Date(y, mo, 0).getDate()), wort: "zum Vormonat" };
+  }
+  return { tage: bereich(plus(a, 1 - S.n), S.n), vorher: bereich(plus(a, 1 - 2 * S.n), S.n), wort: `zu den ${S.n} Tagen davor` };
+}
+
+function titelText() {
+  const a = S.anker, jahr = a.getFullYear() !== new Date().getFullYear() ? ` ${a.getFullYear()}` : "";
+  if (S.ansicht === "tag") {
+    const k = iso(a), wt = k === HEUTE ? "Heute" : k === iso(plus(vonIso(HEUTE), -1)) ? "Gestern" : F_WT.format(a);
+    return `${wt}, ${a.getDate()}. ${F_MON.format(a)}${jahr}`;
+  }
+  if (S.ansicht === "woche") {
+    const m = montag(a), so = plus(m, 6);
+    return `KW ${kw(m)} · ${m.getDate()}.${m.getMonth() !== so.getMonth() ? " " + F_MONK.format(m) : ""} – ${so.getDate()}. ${F_MONK.format(so)}`;
+  }
+  if (S.ansicht === "monat") return `${F_MON.format(a)} ${a.getFullYear()}`;
+  const d0 = plus(a, 1 - S.n);
+  return iso(a) === HEUTE ? `Letzte ${S.n} Tage` : `${d0.getDate()}. ${F_MONK.format(d0)} – ${a.getDate()}. ${F_MONK.format(a)}`;
+}
+
+// --- Ansichten ---
+function ansichtMonat() {
+  const a = S.anker, y = a.getFullYear(), mo = a.getMonth();
+  const n = new Date(y, mo + 1, 0).getDate(), vor = (new Date(y, mo, 1).getDay() + 6) % 7;
+  const zellen = Math.ceil((vor + n) / 7) * 7, ziel = D.ziel_h * 3600;
+  let h = `<div class="wt">${WT.map(w => `<span>${w}</span>`).join("")}</div><div class="raster" style="--zeilen:${zellen / 7}">`;
+  for (let i = 0; i < zellen; i++) {
+    const nr = i - vor + 1;
+    if (nr < 1 || nr > n) { h += "<span></span>"; continue }
+    const d = new Date(y, mo, nr), k = iso(d), t = tag(d), zuk = k > HEUTE, p = Math.min(1, t.arbeit_s / ziel);
+    const tip = zuk ? "" : `${kurzDatum(d)}\n` + (t.arbeit_s ? `${dauer(t.arbeit_s)} Arbeit · ${Math.round(t.arbeit_s / ziel * 100)} % vom Ziel` : "kein Fokus")
+      + (t.pause_s ? `\n${dauer(t.pause_s)} Pause` : "") + (t.arbeit_s ? `\n${uhr(t.beginn_h)} – ${uhr(t.ende_h)}` : "");
+    h += `<button class="zelle${k === HEUTE ? " heute" : ""}${zuk ? " zuk" : ""}${p >= 1 ? " voll" : ""}" data-d="${k}"${tip ? ` data-tip="${esc(tip)}"` : ""} style="--i:${i}">`
+      + `<span class="ringbox"><svg class="ring" viewBox="0 0 40 40"><circle class="spur" cx="20" cy="20" r="16"/>`
+      + (t.arbeit_s >= 30 ? `<circle class="wert" cx="20" cy="20" r="16" style="--o:${(U * (1 - Math.max(p, .03))).toFixed(2)}"/>` : "")
+      + `</svg><span class="nr">${nr}</span></span><span class="h zahl">${t.arbeit_s >= 60 ? dauer(t.arbeit_s, true) : ""}</span></button>`;
+  }
+  return h + `</div><div class="legende">Der Ring füllt sich bis zum Tagesziel von ${dauer(ziel)}</div>`;
+}
+
+function stundenSpanne(tage, mitJetzt, minSpanne = 8) {   // Stundenbereich um die Daten (Stunden ab 0 Uhr des Arbeitstags)
+  const x = tage.flatMap(t => [...t.bloecke, ...t.pausen]).flatMap(([a, b]) => [a, b]);
+  if (mitJetzt) x.push(D.jetzt_h);
+  if (!x.length) return [8, 20];
+  let h0 = Math.floor(Math.min(...x)) - 1, h1 = Math.ceil(Math.max(...x)) + 1;
+  while (h1 - h0 < minSpanne) { h0--; h1++ }
+  const lo = D.tag_beginn_h, hi = D.tag_beginn_h + 24;
+  if (h0 < lo) { h1 += lo - h0; h0 = lo }
+  if (h1 > hi) { h0 -= h1 - hi; h1 = hi }
+  return [Math.max(lo, h0), h1];
+}
+
+function ansichtWoche() {
+  const tg = bereich(montag(S.anker), 7), tt = tg.map(tag), istHeute = tg.some(d => iso(d) === HEUTE);
+  const [h0, h1] = stundenSpanne(tt, istHeute), sp = h1 - h0, pos = x => ((x - h0) / sp * 100).toFixed(3) + "%";
+  const schritt = sp > 14 ? 3 : 2;
+  let h = `<div class="woche" style="--std:${(100 / sp).toFixed(4)}%;--ver:0"><span></span>`;
+  h += tg.map((d, i) => `<div class="wk-t${iso(d) === HEUTE ? " heute" : ""}" data-d="${iso(d)}"><span>${WT[i]}</span><b class="zahl">${d.getDate()}</b></div>`).join("");
+  h += `<div class="achse">${Array.from({ length: Math.floor(sp / schritt) + 1 }, (_, i) => h0 + i * schritt).filter(x => x > h0 && x < h1)
+    .map(x => `<span style="top:${pos(x)}">${x % 24}</span>`).join("")}</div>`;
+  h += tg.map((d, i) => {
+    const t = tt[i], k = iso(d);
+    const pa = t.pausen.map(([a, b]) => `<div class="blk p" style="top:${pos(a)};height:${((b - a) / sp * 100).toFixed(3)}%;--i:${i}" data-tip="${esc(`Pause ${dauer((b - a) * 3600)}\n${uhr(a)} – ${uhr(b)}`)}"></div>`).join("");
+    const bl = t.bloecke.map(([a, b, ti]) => `<div class="blk" style="top:${pos(a)};height:${((b - a) / sp * 100).toFixed(3)}%;--i:${i}" data-tip="${esc(`${dauer((b - a) * 3600)} Fokus\n${uhr(a)} – ${uhr(b)}${ti ? "\n" + ti : ""}`)}"></div>`).join("");
+    const jetzt = k === HEUTE ? `<i class="jetzt" style="top:${pos(D.jetzt_h)}"></i>` : "";
+    return `<div class="spalte${k === HEUTE ? " heute" : ""}" data-d="${k}">${pa}${bl}${jetzt}</div>`;
+  }).join("");
+  h += "<span></span>" + tt.map(t => `<div class="wk-f zahl${t.arbeit_s >= 60 ? " mit" : ""}">${t.arbeit_s >= 60 ? dauer(t.arbeit_s, true) : "–"}</div>`).join("");
+  return h + `</div><div class="legende"><span><i class="punkt-a"></i>Fokus</span><span><i class="punkt-p"></i>Pause</span></div>`;
+}
+
+function ansichtTag() {
+  const d = S.anker, k = iso(d), t = tag(d), istHeute = k === HEUTE;
+  if (!t.bloecke.length && !t.pausen.length)
+    return `<div class="leer"><svg class="ring" viewBox="0 0 40 40"><circle class="spur" cx="20" cy="20" r="16"/></svg>${k > HEUTE ? "Dieser Tag kommt noch" : "Kein Fokus an diesem Tag"}</div>`;
+  const [h0, h1] = stundenSpanne([t], istHeute);
+  let h = `<div class="tag"><div class="stufen">`;
+  for (let s = h0; s < h1; s++) {
+    const teile = [[t.pausen, "fp"], [t.bloecke, "fa"]].flatMap(([liste, cls]) => liste
+      .filter(([a, b]) => b > s && a < s + 1)
+      .map(([a, b]) => `<i class="${cls}" style="left:${((Math.max(a, s) - s) * 100).toFixed(2)}%;width:${((Math.min(b, s + 1) - Math.max(a, s)) * 100).toFixed(2)}%"></i>`));
+    const vorbei = !istHeute || s + 1 <= D.jetzt_h, jetzt = istHeute && s <= D.jetzt_h && D.jetzt_h < s + 1;
+    h += `<div class="std${vorbei && k <= HEUTE ? " vorbei" : ""}${jetzt ? " jetzt-h" : ""}" style="--i:${s - h0}">${teile.join("")}</div>`;
+  }
+  const jede = h1 - h0 > 14 ? 2 : 1;
+  h += `</div><div class="std-lab">${Array.from({ length: h1 - h0 }, (_, i) => `<span>${i % jede ? "" : (h0 + i) % 24}</span>`).join("")}</div>`;
+
+  const ev = [...t.bloecke.map(([a, b, ti]) => ({ a, b, art: "arbeit", ti })), ...t.pausen.map(([a, b]) => ({ a, b, art: "pause" }))].sort((x, y) => x.a - y.a);
+  const zeilen = [];
+  let ende = null;
+  for (const e of ev) {
+    if (ende !== null && e.a - ende > 1 / 60) zeilen.push({ a: ende, b: e.a, art: "frei" });
+    zeilen.push(e);
+    ende = Math.max(ende ?? 0, e.b);
+  }
+  const laeuft = istHeute && D.laeuft && Math.abs(ende - D.jetzt_h) < .02;
+  h += `<ol class="agenda">` + zeilen.map((e, i) => {
+    const lauf = laeuft && e.b === ende;
+    if (e.art === "arbeit")
+      return `<li class="ev arbeit${lauf ? " lauf" : ""}" style="--i:${i}"><span class="z zahl">${uhr(e.a)}</span><span class="p"></span>`
+        + `<div class="c"><b class="zahl">${dauer((e.b - e.a) * 3600)}</b><span>${lauf ? "läuft" : "bis " + uhr(e.b)}${e.ti ? " · " + esc(e.ti) : ""}</span></div></li>`;
+    if (e.art === "pause")
+      return `<li class="ev pause${lauf ? " lauf" : ""}" style="--i:${i}"><span class="z"></span><span class="p"></span><div class="c">Pause ${dauer((e.b - e.a) * 3600)}${lauf ? " · läuft" : ""}</div></li>`;
+    return `<li class="ev frei" style="--i:${i}"><span class="z"></span><span class="p"></span><div class="c">frei ${dauer((e.b - e.a) * 3600)}</div></li>`;
+  }).join("") + (laeuft ? "" : `<li class="ev ende" style="--i:${zeilen.length}"><span class="z zahl">${uhr(ende)}</span><span class="p"></span><div class="c">Ende</div></li>`);
+  return h + `</ol></div>`;
+}
+
+function ansichtZeitraum() {
+  const tg = bereich(plus(S.anker, 1 - S.n), S.n), tt = tg.map(tag);
+  const maxS = Math.max(3600, ...tt.map(t => t.arbeit_s + t.pause_s));
+  const schritt = maxS > 10 * 3600 ? 3 : maxS > 5 * 3600 ? 2 : 1, ymax = Math.ceil(maxS / 3600 / schritt) * schritt;
+  const mit = tt.filter(t => t.arbeit_s >= 60), avg = mit.reduce((s, t) => s + t.arbeit_s, 0) / (mit.length || 1);
+  let h = `<div class="balken" style="--n:${S.n}"><div class="plot">`;
+  const nahAvg = y => mit.length && Math.abs(y - avg / 3600) / ymax < .07;      // Achsenzahl nicht unter dem Ø-Schild
+  for (let y = 0; y <= ymax; y += schritt) h += `<div class="gl" style="bottom:${y / ymax * 100}%"><span>${y && !nahAvg(y) ? y + " h" : ""}</span></div>`;
+  h += `<div class="saeulen">` + tg.map((d, i) => {
+    const t = tt[i], k = iso(d), ges = t.arbeit_s + t.pause_s;
+    const tip = `${kurzDatum(d)}\n${t.arbeit_s ? dauer(t.arbeit_s) + " Fokus" : "kein Fokus"}${t.pause_s ? " · " + dauer(t.pause_s) + " Pause" : ""}`;
+    return `<div class="sp${k === HEUTE ? " heute" : ""}" data-d="${k}" data-tip="${esc(tip)}">`
+      + (ges ? `<div class="bar" style="height:${(ges / 3600 / ymax * 100).toFixed(2)}%;--i:${i}"><i class="bp" style="flex:${t.pause_s}"></i><i class="ba" style="flex:${t.arbeit_s}"></i></div>` : "")
+      + `</div>`;
+  }).join("") + `</div>` + (mit.length ? `<div class="avg" style="bottom:${(avg / 3600 / ymax * 100).toFixed(2)}%"><span class="zahl">Ø ${dauer(avg, true)}</span></div>` : "");
+  h += `</div><div class="xl">` + tg.map(d => `<span class="${iso(d) === HEUTE ? "heute" : ""}">${S.n <= 14 ? WT[(d.getDay() + 6) % 7] : ""}<b class="zahl">${d.getDate()}</b></span>`).join("");
+  return h + `</div></div><div class="legende"><span><i class="punkt-a"></i>Fokus</span><span><i class="punkt-p"></i>Pause</span></div>`;
+}
+
+// --- Kennzahlen ---
+function zaehle(el, wert, fmt) {                  // Zahl rollt vom alten Wert zum neuen
+  const von = el._v ?? 0;
+  el._v = wert;
+  cancelAnimationFrame(el._raf);
+  if (von === wert || matchMedia("(prefers-reduced-motion: reduce)").matches) { el.textContent = fmt(wert); return }
+  const t0 = performance.now();
+  const schritt = now => {
+    const p = Math.min(1, (now - t0) / 520), e = 1 - Math.pow(1 - p, 3);
+    el.textContent = fmt(von + (wert - von) * e);
+    if (p < 1) el._raf = requestAnimationFrame(schritt);
+  };
+  el._raf = requestAnimationFrame(schritt);
+}
+function setze(el, text) {                        // Text tauscht mit kurzer Blende
+  if (el.textContent === text) return;
+  el.textContent = text;
+  el.animate([{ opacity: 0, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }], { duration: 260, easing: "cubic-bezier(.22,1,.36,1)" });
+}
+
+function kennzahlen(liste) {
+  const k = { arbeit: 0, pause: 0, np: 0, bl: 0, mit: 0, beg: 0, end: 0, lang: null, std: Array(24).fill(0) };
+  for (const [d, t] of liste) {
+    k.arbeit += t.arbeit_s; k.pause += t.pause_s; k.np += t.pausen.length; k.bl += t.bloecke.length;
+    if (t.arbeit_s >= 60) { k.mit++; k.beg += t.beginn_h; k.end += t.ende_h }
+    t.stunden.forEach((v, i) => k.std[i] += v);
+    for (const [a, b] of t.bloecke) if (!k.lang || (b - a) * 3600 > k.lang.l) k.lang = { l: (b - a) * 3600, d, a };
+  }
+  return k;
+}
+
+function seite() {
+  const sp = spanne(), bis = sp.tage.filter(d => iso(d) <= HEUTE);
+  const k = kennzahlen(bis.map(d => [d, tag(d)]));
+  const v = kennzahlen(sp.vorher.slice(0, Math.max(1, bis.length)).map(d => [d, tag(d)]));   // gleich viele Tage vergleichen
+  const istTag = S.ansicht === "tag";
+  zaehle($("w-arbeit"), k.arbeit, s => dauer(s));
+  const ua = $("u-arbeit");
+  if (v.arbeit >= 60 && k.arbeit >= 60) {
+    const pz = Math.round((k.arbeit / v.arbeit - 1) * 100);
+    ua.innerHTML = `<span class="delta${pz > 0 ? " hoch" : ""}">${pz > 0 ? "+" : pz < 0 ? "−" : "±"}${Math.abs(pz)} %</span>${sp.wort}`;
+  } else ua.textContent = k.arbeit ? "" : "noch kein Fokus";
+  $("l-schnitt").textContent = istTag ? "Blöcke" : "Ø pro Arbeitstag";
+  if (istTag) {
+    zaehle($("w-schnitt"), k.bl, n => String(Math.round(n)));
+    $("u-schnitt").textContent = k.bl ? `Ø ${dauer(k.arbeit / k.bl)} je Block` : "";
+  } else {
+    zaehle($("w-schnitt"), k.mit ? k.arbeit / k.mit : 0, s => dauer(s));
+    $("u-schnitt").textContent = `an ${k.mit} von ${bis.length} ${bis.length === 1 ? "Tag" : "Tagen"}`;
+  }
+  zaehle($("w-pause"), k.pause, s => dauer(s));
+  $("u-pause").textContent = k.np ? `${k.np} ${k.np === 1 ? "Pause" : "Pausen"} · Ø ${dauer(k.pause / k.np)}` : "keine Pausen";
+  setze($("w-zeit"), k.mit ? `${uhr(k.beg / k.mit)} – ${uhr(k.end / k.mit)}` : "–");
+  $("u-zeit").textContent = !k.mit ? "" : istTag || k.mit === 1 ? "erster Start – letztes Ende" : "Ø Beginn – Ø Ende";
+  zaehle($("w-lang"), k.lang ? k.lang.l : 0, s => dauer(s));
+  $("u-lang").textContent = !k.lang ? "" : istTag ? `ab ${uhr(k.lang.a)}` : `${kurzDatum(k.lang.d)} · ${uhr(k.lang.a)}`;
+
+  const reihe = Array.from({ length: 24 }, (_, i) => k.std[(D.tag_beginn_h + i) % 24]), max = Math.max(...reihe);
+  const spitze = max ? reihe.indexOf(max) : -1, mini = $("mini");
+  if (!mini.children.length) mini.innerHTML = reihe.map(() => `<i style="--s:0"></i>`).join("");
+  [...mini.children].forEach((el, i) => {
+    el.style.setProperty("--s", max ? Math.max(.04, reihe[i] / max).toFixed(3) : .04);
+    el.classList.toggle("spitze", i === spitze);
+    el.dataset.tip = `${(D.tag_beginn_h + i) % 24}–${(D.tag_beginn_h + i + 1) % 24} Uhr\n${reihe[i] ? dauer(reihe[i]) : "nichts"}`;
+  });
+  const sh = (D.tag_beginn_h + spitze) % 24;
+  $("u-spitze").textContent = max ? `am meisten ${sh}–${(sh + 1) % 24} Uhr` : "noch keine Daten";
+}
+
+// --- Zeichnen ---
+const ANSICHTEN = { tag: ansichtTag, woche: ansichtWoche, monat: ansichtMonat, zeitraum: ansichtZeitraum };
+function render(ruhig) {
+  const haupt = $("haupt");
+  haupt.classList.toggle("ein", !ruhig);
+  haupt.innerHTML = ANSICHTEN[S.ansicht]();
+  $("titel").textContent = titelText();
+  const sp = spanne();
+  $("vor").disabled = iso(sp.tage[sp.tage.length - 1]) >= HEUTE;
+  $("heute").classList.toggle("weg", sp.tage.some(d => iso(d) === HEUTE));
+  document.querySelectorAll("#ansicht button").forEach(b => b.classList.toggle("an", b.dataset.v === S.ansicht));
+  document.querySelectorAll("#spannen .chip").forEach(b => b.classList.toggle("an", +b.dataset.n === S.n));
+  $("spannen").classList.toggle("weg", S.ansicht !== "zeitraum");
+  const b = document.querySelector(`#ansicht button[data-v=${S.ansicht}]`), ind = document.querySelector(".ind");
+  ind.style.width = b.offsetWidth + "px";
+  ind.style.transform = `translateX(${b.offsetLeft}px)`;
+  requestAnimationFrame(() => ind.classList.remove("still"));
+  seite();
+  tipAus();
+}
+
+function wechsel(aendern, richtung) {
+  aendern();
+  if (!document.startViewTransition || matchMedia("(prefers-reduced-motion: reduce)").matches) return render(false);
+  document.documentElement.dataset.r = richtung;
+  document.startViewTransition(() => render(false));
+}
+
+function blaettern(r) {
+  if (r > 0 && $("vor").disabled) return;
+  wechsel(() => {
+    const a = S.anker;
+    S.anker = S.ansicht === "tag" ? plus(a, r) : S.ansicht === "woche" ? plus(a, 7 * r)
+      : S.ansicht === "monat" ? new Date(a.getFullYear(), a.getMonth() + r, 1) : plus(a, S.n * r);
+    if (iso(S.anker) > HEUTE) S.anker = vonIso(HEUTE);
+  }, r > 0 ? "vor" : "zurueck");
+}
+
+// --- Bedienung ---
+$("zurueck").onclick = () => blaettern(-1);
+$("vor").onclick = () => blaettern(1);
+$("heute").onclick = () => wechsel(() => { S.anker = vonIso(HEUTE) }, iso(S.anker) < HEUTE ? "vor" : "zurueck");
+$("ansicht").onclick = e => {
+  const v = e.target.closest("button")?.dataset.v;
+  if (v && v !== S.ansicht) wechsel(() => {
+    S.ansicht = v;
+    if (v === "monat" && S.anker.getDate() === 1 && iso(S.anker) < HEUTE) S.anker = new Date(S.anker.getFullYear(), S.anker.getMonth() + 1, 0);
+  }, "ansicht");
+};
+$("spannen").onclick = e => {
+  const n = +e.target.closest("button")?.dataset.n;
+  if (n && n !== S.n) wechsel(() => { S.n = n }, "ansicht");
+};
+$("haupt").onclick = e => {                       // Tag im Monat, Spalte, Balken -> Tagesansicht
+  const el = e.target.closest("[data-d]");
+  if (!el || S.ansicht === "tag" || el.dataset.d > HEUTE) return;
+  wechsel(() => { S.ansicht = "tag"; S.anker = vonIso(el.dataset.d) }, "ansicht");
+};
+addEventListener("keydown", e => {
+  if (e.key === "ArrowLeft") blaettern(-1);
+  else if (e.key === "ArrowRight") blaettern(1);
+  else if (e.key === "t" || e.key === "T") $("heute").click();
+  else if ("1234".includes(e.key) && e.key) document.querySelectorAll("#ansicht button")[+e.key - 1]?.click();
+});
+
+// Tooltip
+const tip = $("tip");
+let tipZiel = null;
+function tipAus() { tipZiel = null; tip.classList.remove("an") }
+document.addEventListener("pointerover", e => {
+  const el = e.target.closest("[data-tip]");
+  if (el === tipZiel) return;
+  if (!el) return tipAus();
+  tipZiel = el;
+  tip.textContent = el.dataset.tip;
+  const r = el.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+  let y = r.top - h - 8;
+  if (y < 6) y = r.bottom + 8;
+  tip.style.left = Math.min(innerWidth - w - 6, Math.max(6, r.left + r.width / 2 - w / 2)) + "px";
+  tip.style.top = y + "px";
+  tip.classList.add("an");
+});
+document.addEventListener("pointerleave", tipAus);
+
+// --- Daten (alle 30 s und beim Zurueckkommen; der laufende Block waechst mit) ---
+let geladen = false;
+async function laden() {
+  try {
+    const r = await fetch("/tage", { cache: "no-store" });
+    D = await r.json();
+    HEUTE = D.heute;
+    if (!S.anker) S.anker = vonIso(HEUTE);
+    $("status").textContent = "";
+    render(geladen);
+    geladen = true;
+  } catch {
+    $("status").textContent = "Fokus antwortet nicht – läuft die Pille?";
+    if (!geladen) { S.anker = S.anker || vonIso(HEUTE); render(false); geladen = true }
+  }
+}
+setInterval(laden, 30000);
+addEventListener("focus", laden);
+laden();
+</script>
+</body>
+</html>

@@ -113,7 +113,10 @@ def main():
         mitten = bunt(zeichnen(t.stand(), dict(ui, m=0.0, cp=cp), 1.0, blau, rot)[0])
         assert (mitten.min(0) == ruhe.min(0)).all() and (mitten.max(0) == ruhe.max(0)).all(), (cp, mitten.min(0), ruhe.min(0))
     _, zonen = zeichnen(t.stand(), dict(ui, m=1.0), 1.0)
-    assert {"playpause", "weiter", "zurueck", "lautstaerke"} <= {z[0] for z in zonen}
+    assert {"playpause", "weiter", "zurueck", "lautstaerke", "auswertung"} <= {z[0] for z in zonen}
+    ohne, _ = zeichnen(t.stand(), dict(ui, m=1.0), 1.0)
+    mit, _ = zeichnen(t.stand(), dict(ui, m=1.0, hover="auswertung"), 1.0)
+    assert (mit != ohne).any()                                    # Hover zeigt "Auswertung"
     # Favorit: Herz-Zone nur, wenn der Tab das Herz kennt; Hover malt das Herz aufs Cover
     assert "favorit" not in {z[0] for z in zonen}
     fav = dict(ui, m=1.0, musik=dict(ui["musik"], favorit=False))
@@ -159,6 +162,7 @@ def main():
     App._klick(pille, None)
     assert befehle == [{"aktion": "anhalten"}], befehle
     ws_test()
+    auswertung_test()
     print("ok")
 
 
@@ -193,7 +197,7 @@ def ws_test():
 
     s = socket.create_connection(("127.0.0.1", port))
     key = base64.b64encode(os.urandom(16)).decode()
-    zeilen = ["GET /ws HTTP/1.1", "Host: x", "Upgrade: websocket", "Connection: Upgrade",
+    zeilen = ["GET /ws HTTP/1.1", "Host: 127.0.0.1", "Upgrade: websocket", "Connection: Upgrade",
               f"Sec-WebSocket-Key: {key}", "Sec-WebSocket-Version: 13", "Origin: chrome-extension://abc"]
     s.sendall(("\r\n".join(zeilen) + "\r\n\r\n").encode())
     kopf = b""
@@ -254,6 +258,50 @@ def ws_test():
     assert offen(bl, t0 + 600)["posten"][0]["minuten"] == 10
     assert offen(bl, t0 + 2060) == {"bis": t0 + 2060, "posten": []}
     print("ok")
+
+
+def auswertung_test():
+    """tage(): 4-Uhr-Grenze, Luecken bis 90 min = Pause, Pause-Block nicht doppelt; /tage, /auswertung, fremder Host."""
+    from fokus import tage, PAUSE_MAX_S
+    t0 = time.mktime((2026, 11, 2, 22, 0, 0, 0, 0, -1))           # Mo 22:00
+    bl = [{"start": t0, "ende": t0 + 3600, "art": "arbeit", "titel": "A"},            # 22:00-23:00
+          {"start": t0 + 3600, "ende": t0 + 4200, "art": "pause"},                     # Pause-Block in der Luecke
+          {"start": t0 + 4800, "ende": t0 + 4 * 3600, "art": "arbeit"},                # 23:20-02:00 (Nacht)
+          {"start": t0 + 4 * 3600 + PAUSE_MAX_S + 60, "ende": t0 + 4 * 3600 + PAUSE_MAX_S + 660, "art": "arbeit"}]  # nach 91 min
+    d = tage(bl)
+    assert list(d) == ["2026-11-02"], d.keys()                    # alles vor 4 Uhr = Vortag
+    t = d["2026-11-02"]
+    assert t["arbeit_s"] == 3600 + 9600 + 600 and t["pause_s"] == 1200, t   # 91-min-Luecke ist keine Pause
+    assert t["beginn_h"] == 22 and abs(t["ende_h"] - (27 + 41 / 60)) < 1e-3, t
+    assert t["stunden"][22] == 3600 and t["stunden"][23] == 2400 and t["stunden"][0] == 3600 and t["stunden"][3] == 600
+    assert t["bloecke"][0] == [22.0, 23.0, "A"] and t["pausen"] == [[23.0, round(23 + 1 / 3, 4)]], t
+    g = tage([{"start": t0 + 5 * 3600 + 3000, "ende": t0 + 6 * 3600 + 600, "art": "arbeit"}])   # 03:50-04:10
+    assert {k: v["arbeit_s"] for k, v in g.items()} == {"2026-11-02": 600, "2026-11-03": 600}, g
+    g = tage([{"start": t0, "ende": t0 + 600, "art": "arbeit"}, {"start": t0 + 600.7, "ende": t0 + 1200, "art": "arbeit"}])
+    assert len(g["2026-11-02"]["bloecke"]) == 1 and g["2026-11-02"]["pausen"] == [], g   # 0,7 s Neustart = ein Block
+
+    ablage = Path(tempfile.mkdtemp()) / "b.jsonl"
+    ablage.write_text("".join(json.dumps(b) + "\n" for b in bl), "utf-8")
+    uhr = Uhr(t0 + 6 * 3600)                                      # Di 04:00 -> Arbeitstag 03.11.
+    StubApp = SimpleNamespace(timer=Timer(ablage, uhr), cfg={"tagesziel_h": 5})
+    StubApp.timer.start()
+    uhr.t += 600                                                  # laufender Block zaehlt schon mit
+    Api.app = StubApp
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Api)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    a = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/tage", timeout=5).read())
+    assert a["heute"] == "2026-11-03" and a["laeuft"] and a["ziel_h"] == 5, a
+    assert a["tage"]["2026-11-03"]["arbeit_s"] == 600 and a["tage"]["2026-11-02"]["arbeit_s"] == 13800, a
+    seite = urllib.request.urlopen(f"http://127.0.0.1:{port}/auswertung", timeout=5).read().decode("utf-8")
+    assert "<title>Fokus · Auswertung</title>" in seite
+    try:                                                          # DNS-Rebinding: fremder Hostname
+        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/tage",
+                                                      headers={"Host": "boese.example"}), timeout=5)
+        assert False, "fremder Host durfte lesen"
+    except urllib.error.HTTPError as e:
+        assert e.code == 403
+    srv.shutdown()
 
 
 if __name__ == "__main__":

@@ -26,11 +26,12 @@ import queue
 import sys
 import threading
 import re
+import subprocess
 import time
 import tkinter as tk
 import urllib.parse
 import winsound
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -38,11 +39,15 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.11"
+VERSION = "0.2.12"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
 CONFIG = DIR / "config.json"
+HIER = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))   # PyInstaller: entpackte Daten
+AUSWERTUNG = HIER / "auswertung.html"
+AUSWERTUNG_TITEL = "Fokus · Auswertung"
+AUSWERTUNG_GROESSE = (800, 700)   # logische Pixel inkl. Titelleiste
 
 CW, CH = 276, 48        # Pille zu (logische Pixel)
 EW, EH = 344, 404       # Panel auf
@@ -70,6 +75,79 @@ def lade_bloecke(pfad=BLOECKE):
         return [json.loads(z) for z in Path(pfad).read_text("utf-8").splitlines() if z.strip()]
     except FileNotFoundError:
         return []
+
+
+TAG_BEGINN_H = 4          # ponytail: Arbeitstag wechselt um 4 Uhr, Nachtarbeit zaehlt zum Vortag
+PAUSE_MAX_S = 90 * 60     # ponytail: Luecke zwischen Arbeitsbloecken bis 90 min = Pause, laenger = Feierabend
+
+
+def tag_von(t):
+    """Arbeitstag (date) eines Zeitpunkts."""
+    return (datetime.fromtimestamp(t) - timedelta(hours=TAG_BEGINN_H)).date()
+
+
+def _tag_null(d):
+    return datetime.combine(d, datetime.min.time()).timestamp()
+
+
+def tage(bloecke):
+    """Bloecke -> {"2026-11-04": {arbeit_s, pause_s, beginn_h, ende_h, bloecke, pausen, stunden}}.
+    Zeiten in Stunden ab 0 Uhr des Arbeitstags (Nachtarbeit > 24). Pausen = Pause-Bloecke plus
+    Luecken zwischen Arbeitsbloecken bis PAUSE_MAX_S, zusammengefuehrt (nie doppelt gezaehlt)."""
+    arbeit = []
+    for s, e, titel in sorted((b["start"], b["ende"], b.get("titel") or "") for b in bloecke
+                              if b.get("art", "arbeit") == "arbeit" and b["ende"] > b["start"]):
+        if arbeit and s - arbeit[-1][1] < 60:          # Neustart ohne echte Luecke: ein Block, keine Mini-Pause
+            arbeit[-1][1] = max(arbeit[-1][1], e)
+        else:
+            arbeit.append([s, e, titel])
+    roh = [(b["start"], b["ende"]) for b in bloecke if b.get("art") == "pause" and b["ende"] > b["start"]]
+    roh += [(e0, s1) for (_, e0, _), (s1, _, _) in zip(arbeit, arbeit[1:]) if 0 < s1 - e0 <= PAUSE_MAX_S]
+    pausen = []
+    for s, e in sorted(roh):
+        if pausen and s <= pausen[-1][1]:
+            pausen[-1][1] = max(pausen[-1][1], e)
+        else:
+            pausen.append([s, e])
+
+    def stuecke(s, e):              # an der Tagesgrenze (4 Uhr) teilen
+        while s < e:
+            d = tag_von(s)
+            grenze = _tag_null(d + timedelta(days=1)) + TAG_BEGINN_H * 3600
+            yield d, s, min(e, grenze)
+            s = grenze
+
+    aus = {}
+
+    def tag(d):
+        k = d.isoformat()
+        if k not in aus:
+            aus[k] = {"arbeit_s": 0, "pause_s": 0, "beginn_h": None, "ende_h": None,
+                      "bloecke": [], "pausen": [], "stunden": [0] * 24}
+        return aus[k], _tag_null(d)
+
+    for s0, e0, titel in arbeit:
+        for d, s, e in stuecke(s0, e0):
+            t, null = tag(d)
+            a_, b_ = (s - null) / 3600, (e - null) / 3600
+            t["arbeit_s"] += e - s
+            t["bloecke"].append([round(a_, 4), round(b_, 4), titel])
+            t["beginn_h"] = a_ if t["beginn_h"] is None else min(t["beginn_h"], a_)
+            t["ende_h"] = b_ if t["ende_h"] is None else max(t["ende_h"], b_)
+            while s < e:            # Verteilung ueber die Uhrzeit (0..23)
+                u = datetime.fromtimestamp(s)
+                nxt = (u.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)).timestamp()
+                t["stunden"][u.hour] += min(e, nxt) - s
+                s = nxt
+    for s0, e0 in pausen:
+        for d, s, e in stuecke(s0, e0):
+            t, null = tag(d)
+            t["pause_s"] += e - s
+            t["pausen"].append([round((s - null) / 3600, 4), round((e - null) / 3600, 4)])
+    for t in aus.values():
+        t["arbeit_s"], t["pause_s"] = round(t["arbeit_s"]), round(t["pause_s"])
+        t["stunden"] = [round(x) for x in t["stunden"]]
+    return aus
 
 
 class Timer:
@@ -272,7 +350,7 @@ def schrift_symbol(px):
 
 
 AUF, ZU, PLAY, PAUSE, STOP, PLUS, MINUS = "\uE70E", "\uE70D", "\uE768", "\uE769", "\uE71A", "\uE710", "\uE738"
-ZURUECK, WEITER, MIKRO = "\uE892", "\uE893", "\uE720"
+ZURUECK, WEITER, MIKRO, PFEIL_R = "\uE892", "\uE893", "\uE720", "\uE76C"
 HERZ, HERZ_VOLL = "\uEB51", "\uEB52"
 STOPPUHR = "\uE916"
 
@@ -894,9 +972,14 @@ def zeichnen(st, ui, z, cover=None, cover_alt=None):
         fk = schrift(round(S(11)), 500)
         n = st["fokus_bloecke"]
         info = f"Heute {stunden(st['heute_s'])} · {n} {'Block' if n == 1 else 'Blöcke'}"
+        tl1 = hy + 19
+        if zone("auswertung", L - 8, hy - 15, Rr + 8, tl1 + 7):     # ganze Heute-Zeile oeffnet die Auswertung
+            lw.box(S(L - 8), S(hy - 15), S(Rr + 8), S(tl1 + 7), S(10), a(WEISS, ein(14)))
+            lw.text(S(Rr), S(hy - 4), PFEIL_R, symbolschrift(round(S(9))), a(WEISS, ein(235)), "rm")
+            lw.text(S(Rr - 14), S(hy), "Auswertung", fk, a(WEISS, ein(235)), "rs")
+        else:
+            lw.text(S(Rr), S(hy), datetime.fromtimestamp(ui["jetzt"]).strftime("%H:%M"), fk, a(GRAU, ein(170)), "rs")
         lw.text(S(L), S(hy), info, fk, a(GRAU, ein(255)))
-        jetzt = datetime.fromtimestamp(ui["jetzt"])
-        lw.text(S(Rr), S(hy), jetzt.strftime("%H:%M"), fk, a(GRAU, ein(170)), "rs")
         # Eine Pille je Stunde (Stufen); Bloecke fuellen sie an ihrer Uhrzeit, die laufende Stunde ist umrandet
         tl0, tl1 = hy + 9, hy + 19
         h0 = heute_start(ui["jetzt"])
@@ -1294,12 +1377,35 @@ class Api(BaseHTTPRequestHandler):
         o = self.headers.get("Origin")
         return bool(o) and not o.startswith("chrome-extension://")
 
+    def _fremder_host(self):
+        """DNS-Rebinding: eine Webseite, deren Name auf 127.0.0.1 zeigt, gilt sonst als gleiche Herkunft."""
+        return (self.headers.get("Host") or "").rsplit(":", 1)[0] not in ("127.0.0.1", "localhost")
+
     def do_GET(self):
-        if self._fremde_seite():
+        if self._fremde_seite() or self._fremder_host():
             return self._json({"fehler": "verboten"}, 403)
         pfad = self.path.rstrip("/")
         if pfad == "/stand":
             return self._json(self.app.letzter_stand)
+        if pfad == "/auswertung":
+            body = AUSWERTUNG.read_bytes()
+            self.send_response(200)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-length", str(len(body)))
+            self.send_header("cache-control", "no-store")
+            self.end_headers()
+            return self.wfile.write(body)
+        if pfad == "/tage":
+            t = self.app.timer
+            bl = lade_bloecke(t.ablage)
+            seit = t.seit       # ponytail: ohne Lock; schliesst der Block gerade, fehlt er hoechstens einen Abruf lang
+            if seit is not None:
+                bl.append({"start": seit, "ende": t.uhr(), "art": t.art})
+            jetzt = t.uhr()
+            d = tag_von(jetzt)
+            return self._json({"tage": tage(bl), "heute": d.isoformat(), "jetzt_h": (jetzt - _tag_null(d)) / 3600,
+                               "laeuft": seit is not None, "ziel_h": float(self.app.cfg.get("tagesziel_h", 6)),
+                               "tag_beginn_h": TAG_BEGINN_H})
         if pfad == "/ws":
             return self._websocket()
         self._json({"fehler": "unbekannt"}, 404)
@@ -1332,7 +1438,7 @@ class Api(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def do_POST(self):
-        if self._fremde_seite():
+        if self._fremde_seite() or self._fremder_host():
             return self._json({"fehler": "verboten"}, 403)
         try:
             n = int(self.headers.get("content-length") or 0)
@@ -1383,6 +1489,23 @@ def speichere_config(cfg):
     tmp = CONFIG.with_suffix(".tmp")
     tmp.write_text(json.dumps(cfg, indent=1), "utf-8")
     os.replace(tmp, CONFIG)
+
+
+def fenster_mit_titel(anfang):
+    """Sichtbare Fenster, deren Titel so beginnt (Edge haengt ' - [InPrivate]' an)."""
+    u, treffer = ctypes.windll.user32, []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
+    def pruefen(h, _):
+        n = u.GetWindowTextLengthW(h)
+        if n and u.IsWindowVisible(h):
+            b = ctypes.create_unicode_buffer(n + 1)
+            u.GetWindowTextW(h, b, n + 1)
+            if b.value.startswith(anfang):
+                treffer.append(h)
+        return True
+    u.EnumWindows(pruefen, 0)
+    return treffer
 
 
 class Feder:
@@ -1589,9 +1712,39 @@ class App:
             self._primaer()
         elif zone == "stopp":
             self.ausfuehren({"aktion": "stop"})
+        elif zone == "auswertung":
+            self.auswertung_oeffnen()
         elif zone == "stoppuhr" and not (self.timer.offen and self.timer.status != "aus"
                                           and self.timer.art == ("pause" if self.tab == "pause" else "arbeit")):
             self.ausfuehren({"aktion": "stoppuhr", "art": self.tab})
+
+    def auswertung_oeffnen(self):
+        """Auswertung als App-Fenster (Chrome, sonst Edge) neben der Pille; ist es schon offen, nach vorn holen.
+        Eigener Datenordner: startet unabhaengig vom normalen Browser und haelt sich an Groesse/Lage."""
+        u = ctypes.windll.user32
+        offen = fenster_mit_titel(AUSWERTUNG_TITEL)
+        if offen:
+            u.ShowWindow(offen[0], 9)                                # SW_RESTORE
+            u.SetForegroundWindow(offen[0])
+            return
+        url = f"http://127.0.0.1:{PORT}/auswertung"
+        pf = [Path(os.environ.get(v, "-")) for v in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA")]
+        # Edge nur InPrivate: ein frisches Edge-Profil meldet sich sonst still mit dem Windows-Konto an (Sync-Dialog)
+        browser = [(b / "Google/Chrome/Application/chrome.exe", []) for b in pf] + \
+                  [(b / "Microsoft/Edge/Application/msedge.exe", ["--inprivate"]) for b in pf]
+        exe, extra = next(((e, x) for e, x in browser if e.exists()), (None, None))
+        if exe is None:
+            return os.startfile(url)                                 # ponytail: Rueckfall Standardbrowser, ohne Lage
+        w, h = AUSWERTUNG_GROESSE
+        vx, vy, vw, vh = self.virt
+        z = self.z
+        panel_l = self.px + (CW - EW) * z if self.anker == "r" else self.px
+        x = panel_l - (12 + w) * z if self.anker == "r" else panel_l + (EW + 12) * z
+        x = min(max(x, vx), vx + vw - w * z)
+        y = min(max(self.py, vy), vy + vh - h * z)
+        subprocess.Popen([str(exe), *extra, f"--app={url}", f"--user-data-dir={DIR / 'browser'}", "--no-first-run",
+                          "--no-default-browser-check", f"--window-size={w},{h}",
+                          f"--window-position={round(x / z)},{round(y / z)}"])     # Chromium rechnet in logischen Pixeln
 
     # --- Maus ---
     def _treffer(self, x, y):
@@ -1714,6 +1867,7 @@ class App:
             pystray.MenuItem(lambda i: "Ausblenden" if self.sichtbar else "Einblenden",
                              spaeter(lambda: self.zeigen()), default=True),
             pystray.MenuItem("Aufklappen", spaeter(lambda: (self.zeigen(True), self.aufklappen()))),
+            pystray.MenuItem("Auswertung", spaeter(self.auswertung_oeffnen)),
             pystray.MenuItem("Timer stoppen", spaeter(lambda: self.ausfuehren({"aktion": "stop"}))),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Fokus beenden", spaeter(self.beenden)),
