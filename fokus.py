@@ -39,14 +39,14 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.15"
+VERSION = "0.2.16"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
 CONFIG = DIR / "config.json"
 HIER = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))   # PyInstaller: entpackte Daten
 AUSWERTUNG = HIER / "auswertung.html"
-SEITEN = {"/auswertung": AUSWERTUNG, "/banner": HIER / "banner.html"}   # banner: OBS-Browserquelle "Jetzt laeuft"
+SEITEN = {"/auswertung": AUSWERTUNG}
 AUSWERTUNG_TITEL = "Fokus · Auswertung"
 AUSWERTUNG_GROESSE = (800, 700)   # logische Pixel inkl. Titelleiste
 
@@ -1383,9 +1383,6 @@ class Api(BaseHTTPRequestHandler):
         pfad = self.path.rstrip("/")
         if pfad == "/stand":
             return self._json(self.app.letzter_stand)
-        if pfad == "/jetzt":                             # fuer den Banner: mit Cover-Adresse und laufender Position
-            sp = self.app.spotify
-            return self._json(dict(sp.stand, position=sp.position()))
         if pfad in SEITEN:
             body = SEITEN[pfad].read_bytes()
             self.send_response(200)
