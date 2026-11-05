@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Fokus · Jetzt läuft</title>
+<!-- OBS-Browserquelle: http://127.0.0.1:47650/banner — skaliert mit der Quellbreite (z. B. 900 × 260) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;700;800&display=swap" rel="stylesheet">
+<style>
+@property --a1 { syntax: "<color>"; inherits: true; initial-value: #ff5fa2; }
+@property --a2 { syntax: "<color>"; inherits: true; initial-value: #8a6bff; }
+:root { font-size: calc(100vw / 37.5); }
+html, body { margin: 0; background: transparent; overflow: hidden; }
+body { padding: 1.5rem; color: #fff; -webkit-font-smoothing: antialiased;
+  font-family: "Plus Jakarta Sans", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; }
+
+.karte { position: relative; isolation: isolate; overflow: hidden; display: flex; align-items: center; gap: 1.05rem;
+  padding: .85rem 1.3rem .85rem .85rem; border-radius: 1.6rem; background: #17121f;
+  box-shadow: 0 1.1rem 2.4rem -.9rem rgba(0,0,0,.55), 0 0 2.2rem -1rem var(--a1);
+  transition: opacity .7s cubic-bezier(.2,.8,.2,1), transform .7s cubic-bezier(.2,.8,.2,1), filter .7s,
+              --a1 1.4s, --a2 1.4s; }
+.karte.weg { opacity: 0; transform: translateY(1.2rem) scale(.97); filter: blur(.4rem); }
+/* Farbe kommt vom Cover: riesig, verwischt, gesaettigt, dreht sich langsam */
+.bg { position: absolute; z-index: -2; left: 50%; top: 50%; width: 140%; aspect-ratio: 1; translate: -50% -50%;
+  background: center / cover no-repeat; filter: blur(2.2rem) saturate(1.9) brightness(.7);
+  animation: drehen 60s linear infinite; }
+@keyframes drehen { to { rotate: 360deg; } }
+.karte::before { content: ""; position: absolute; inset: 0; z-index: -1;
+  background: linear-gradient(100deg, rgba(14,10,26,.68), rgba(14,10,26,.46) 55%, rgba(14,10,26,.3)); }
+.karte::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.14), inset 0 1px 0 rgba(255,255,255,.2); }
+
+.cover { position: relative; flex: none; width: 5.75rem; aspect-ratio: 1; border-radius: 1rem; overflow: hidden;
+  background: linear-gradient(135deg, var(--a2), var(--a1)); box-shadow: 0 .7rem 1.4rem -.4rem rgba(0,0,0,.6); }
+.cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+.info { flex: 1; min-width: 0; }
+.kopf { display: flex; align-items: center; gap: .5rem; margin-bottom: .28rem; font-size: .6rem; font-weight: 800;
+  letter-spacing: .17em; text-transform: uppercase; color: rgba(255,255,255,.8); }
+.eq { display: flex; align-items: flex-end; gap: .14rem; height: .7rem; }
+.eq i { width: .17rem; height: 100%; border-radius: .1rem; background: var(--a1); transform-origin: bottom;
+  box-shadow: 0 0 .45rem var(--a1); animation: hupf .8s ease-in-out infinite alternate; }
+.eq i:nth-child(2) { animation-duration: .55s; animation-delay: -.25s; }
+.eq i:nth-child(3) { animation-duration: .95s; animation-delay: -.5s; }
+.eq i:nth-child(4) { animation-duration: .68s; animation-delay: -.1s; }
+@keyframes hupf { from { transform: scaleY(.22); } to { transform: scaleY(1); } }
+.pausiert .eq i { animation: none; transform: scaleY(.22); }
+
+.titel { font-size: 1.32rem; font-weight: 800; letter-spacing: -.015em; line-height: 1.22; white-space: nowrap; overflow: hidden; }
+.titel span { display: inline-block; }
+.titel.lang { mask-image: linear-gradient(90deg, #000 calc(100% - 1.8rem), transparent); }
+.titel.lang span { padding-right: 1.8rem; }
+.kuenstler { margin-top: .08rem; font-size: .9rem; font-weight: 500; color: rgba(255,255,255,.74);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.zeit { display: flex; align-items: center; gap: .6rem; margin-top: .62rem; font-size: .66rem; font-weight: 700;
+  font-variant-numeric: tabular-nums; color: rgba(255,255,255,.72); }
+.balken { position: relative; flex: 1; height: .26rem; border-radius: 1rem; background: rgba(255,255,255,.2); }
+.fuell { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: inherit;
+  background: linear-gradient(90deg, var(--a2), var(--a1)); box-shadow: 0 0 .55rem var(--a1); }
+</style>
+</head>
+<body>
+<div class="karte weg" id="karte">
+  <div class="cover" id="cover"></div>
+  <div class="info" id="info">
+    <div class="kopf"><span class="eq"><i></i><i></i><i></i><i></i></span><span id="kopf">Now Playing</span></div>
+    <div class="titel" id="titel"><span></span></div>
+    <div class="kuenstler" id="kuenstler"></div>
+    <div class="zeit"><span id="ist">0:00</span><div class="balken"><div class="fuell" id="fuell"></div></div><span id="dauer">0:00</span></div>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const karte = $("karte"), titelBox = $("titel"), titel = titelBox.firstElementChild;
+const RUHIG = { duration: 520, easing: "cubic-bezier(.2,.8,.2,1)", fill: "backwards" };
+const PAUSE_WEG_S = 20;                  // so lange pausiert, dann blendet der Banner aus
+let song = "", lauf = 0, stand = null, fehler = 0, pausiertSeit = null;
+
+const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+function hsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, d = mx - mn;
+  if (!d) return [0, 0, l];
+  const s = d / (1 - Math.abs(2 * l - 1));
+  const h = mx === r ? ((g - b) / d + 6) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h * 60, s, l];
+}
+
+// Zwei kraeftige, verschiedene Farbtoene aus dem Cover; graue Cover behalten die Grundfarben
+function farben(img) {
+  const c = document.createElement("canvas");
+  c.width = c.height = 24;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.drawImage(img, 0, 0, 24, 24);
+  const d = g.getImageData(0, 0, 24, 24).data, topf = new Array(12).fill(0), ton = new Array(12).fill(0);
+  for (let i = 0; i < d.length; i += 4) {
+    const [h, s, l] = hsl(d[i], d[i + 1], d[i + 2]);
+    const w = s * Math.max(0, 1 - Math.abs(l - .55) * 2.2);
+    const k = Math.floor(h / 30) % 12;
+    topf[k] += w; ton[k] += h * w;
+  }
+  const rang = topf.map((w, k) => [w, k]).sort((a, b) => b[0] - a[0]);
+  if (rang[0][0] < 2) return;
+  const h1 = ton[rang[0][1]] / rang[0][0];
+  // Zweiter Ton nur, wenn er nah genug liegt (Verlauf bleibt harmonisch), sonst Nachbarton
+  const abstand = (k) => Math.min(Math.abs(k - rang[0][1]), 12 - Math.abs(k - rang[0][1]));
+  const zweit = rang.find(([w, k]) => w > 0 && abstand(k) >= 1 && abstand(k) <= 3);
+  const h2 = zweit ? ton[zweit[1]] / zweit[0] : h1 - 35;
+  karte.style.setProperty("--a1", `hsl(${h1} 92% 64%)`);
+  karte.style.setProperty("--a2", `hsl(${h2} 88% 60%)`);
+}
+
+// Zu langer Titel laeuft hin und her
+function laufschrift() {
+  titel.getAnimations().forEach((a) => a.cancel());
+  titelBox.classList.remove("lang");
+  if (titel.offsetWidth <= titelBox.clientWidth) return;
+  titelBox.classList.add("lang");
+  const weg = titel.offsetWidth - titelBox.clientWidth;
+  const t0 = "translateX(0)", t1 = `translateX(${-weg}px)`;
+  titel.animate([{ transform: t0 }, { transform: t0, offset: .18, easing: "ease-in-out" }, { transform: t1, offset: .55 },
+                 { transform: t1, offset: .73, easing: "ease-in-out" }, { transform: t0 }],
+                { duration: 6000 + weg * 45, iterations: Infinity });
+}
+
+async function wechsel(d) {
+  const nr = ++lauf, info = [titelBox, $("kuenstler")];
+  if (song) await Promise.all(info.map((e) => e.animate([{ opacity: 1 }, { opacity: 0, transform: "translateY(-.35rem)", filter: "blur(3px)" }],
+                                                     { duration: 220, easing: "ease-in", fill: "forwards" }).finished));
+  if (nr !== lauf) return;
+  titel.textContent = d.titel;
+  $("kuenstler").textContent = d.kuenstler || "";
+  info.forEach((e, i) => { e.getAnimations().forEach((a) => a.cancel());
+    e.animate([{ opacity: 0, transform: "translateY(.45rem)", filter: "blur(4px)" }, { opacity: 1, transform: "none", filter: "none" }],
+              { ...RUHIG, delay: i * 70 }); });
+  laufschrift();
+  if (!d.bild) return;
+  const img = new Image();
+  img.crossOrigin = "anonymous";             // i.scdn.co erlaubt CORS: Farben lesbar
+  img.src = d.bild;
+  try { await img.decode(); } catch { return; }
+  if (nr !== lauf) return;
+  const cover = $("cover"), alt = [...cover.children];
+  cover.append(img);
+  img.animate([{ opacity: 0, transform: "scale(1.12)" }, { opacity: 1, transform: "none" }], { duration: 700, easing: "cubic-bezier(.2,.8,.2,1)" })
+     .finished.then(() => alt.forEach((e) => e.remove()));
+  try { farben(img); } catch {}
+  const bg = document.createElement("div"), altBg = [...karte.querySelectorAll(".bg")];
+  bg.className = "bg";
+  bg.style.backgroundImage = `url("${d.bild}")`;
+  bg.style.animationDelay = `${-(performance.now() / 1000 % 60)}s`;     // gleiche Drehung wie die alte Ebene
+  karte.prepend(bg);
+  bg.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 1200, easing: "ease-out" }).finished.then(() => altBg.forEach((e) => e.remove()));
+}
+
+function zeigen(d) {
+  const da = !!(d.verbunden && d.titel);
+  const spielt = !!d.spielt;
+  pausiertSeit = spielt || !da ? null : (pausiertSeit ?? Date.now());
+  karte.classList.toggle("weg", !da || (pausiertSeit !== null && Date.now() - pausiertSeit > PAUSE_WEG_S * 1000));
+  if (!da) return;
+  karte.classList.toggle("pausiert", !spielt);
+  $("kopf").textContent = spielt ? "Now Playing" : "Pausiert";
+  const key = d.titel + "\n" + d.kuenstler;
+  if (key !== song) { wechsel(d); song = key; }
+  stand = { pos: d.position ?? d.pos ?? 0, dauer: d.dauer || 0, spielt, t: performance.now() };
+  $("dauer").textContent = mmss(stand.dauer);
+}
+
+async function holen() {
+  try {
+    const r = await fetch("/jetzt", { cache: "no-store" });
+    zeigen(await r.json());
+    fehler = 0;
+  } catch {
+    if (++fehler >= 3) karte.classList.add("weg");     // App aus
+  }
+  setTimeout(holen, 1000);
+}
+
+function bild() {
+  if (stand) {
+    const p = Math.min(stand.dauer || Infinity, stand.pos + (stand.spielt ? (performance.now() - stand.t) / 1000 : 0));
+    $("fuell").style.width = (stand.dauer ? Math.min(100, p / stand.dauer * 100) : 0) + "%";
+    const s = mmss(p);
+    if ($("ist").textContent !== s) $("ist").textContent = s;
+  }
+  requestAnimationFrame(bild);
+}
+
+document.fonts.ready.then(laufschrift);
+addEventListener("resize", laufschrift);
+holen();
+bild();
+</script>
+</body>
+</html>

@@ -16,12 +16,18 @@ Bauen: `powershell -ExecutionPolicy Bypass -File build.ps1` (Tests, Fokus.exe, S
 - Hover über der Pille: zurück / Play-Pause / weiter. Mausrad: Spotify-Lautstärke.
 - Klick auf die Heute-Leiste (oder Infobereich → „Auswertung“): Auswertungsfenster neben der Pille (Chrome-App-Fenster, sonst Edge InPrivate) mit Tag, Woche, Monat und Zeitraum (7/10/14/30 Tage); ← → blättert, T = heute, 1–4 = Ansicht. Arbeitstag wechselt um 4 Uhr; Lücken bis 90 min zwischen Blöcken zählen als Pause. Tagesziel für die Ringe: `tagesziel_h` in `config.json` (Standard 6).
 
+## Stream-Banner (OBS)
+
+Browserquelle mit URL `http://127.0.0.1:47650/banner`, Breite 900, Höhe 260 (skaliert mit der Breite, Hintergrund transparent). Zeigt Cover, Titel, Künstler, Fortschritt und Dauer des laufenden Spotify-Songs; Farben kommen aus dem Cover. Blendet aus, wenn nichts läuft oder 20 s pausiert ist.
+
 ## Schnittstelle (nur 127.0.0.1)
 
 ```
 GET  http://127.0.0.1:47650/stand
 GET  http://127.0.0.1:47650/tage        (je Arbeitstag: Arbeit, Pausen, Blöcke, Verteilung über den Tag)
 GET  http://127.0.0.1:47650/auswertung  (Auswertungsseite)
+GET  http://127.0.0.1:47650/banner      (Stream-Banner)
+GET  http://127.0.0.1:47650/jetzt       (laufender Song inkl. Cover-Adresse und Position)
 POST http://127.0.0.1:47650/timer    {"aktion": "start|anhalten|stop|pause|ziel", "minuten": 50, "titel": "..."}
 POST http://127.0.0.1:47650/spotify  {"cmd": "playpause|weiter|zurueck|lautstaerke", "wert": 0.4}
 ```

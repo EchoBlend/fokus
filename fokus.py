@@ -39,13 +39,14 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.13"
+VERSION = "0.2.14"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
 CONFIG = DIR / "config.json"
 HIER = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))   # PyInstaller: entpackte Daten
 AUSWERTUNG = HIER / "auswertung.html"
+SEITEN = {"/auswertung": AUSWERTUNG, "/banner": HIER / "banner.html"}   # banner: OBS-Browserquelle "Jetzt laeuft"
 AUSWERTUNG_TITEL = "Fokus · Auswertung"
 AUSWERTUNG_GROESSE = (800, 700)   # logische Pixel inkl. Titelleiste
 
@@ -1245,7 +1246,7 @@ class Spotify:
 
     def __init__(self):
         self.ws, self.stand, self.cover, self._cover_url = None, {"verbunden": False}, None, None
-        self._pos_t, self._pos_roh = time.time(), None
+        self._pos_t = time.time()
         self.text_an, self.text, self._text_fuer = False, [], None     # Songtext: an/aus, Zeilen, fuer welchen Song
         self.text_status = "keiner"                                     # laedt | da | keiner
         self._neu_geladen = False
@@ -1264,16 +1265,11 @@ class Spotify:
     def empfangen(self, d):
         if not isinstance(d, dict):
             return
-        vorher, roh = self.position(), d.get("pos")
         self.stand = {k: d.get(k) for k in ("verbunden", "titel", "kuenstler", "spielt", "lautstaerke", "favorit", "bild",
                                             "pos", "dauer", "gefunden")}
-        # pos kommt in ganzen Sekunden, ~0.3 s nach dem Sekundenwechsel (Observer-Verzoegerung im Tab).
-        # Nur beim Wechsel neu ankern; sonst weiterzaehlen statt auf den abgerundeten Wert zurueckzufallen.
-        if roh != self._pos_roh or vorher is None or not isinstance(roh, (int, float)) or abs(vorher - roh) > 1.5:
-            self._pos_t = time.time() - 0.3
-        else:
-            self.stand["pos"], self._pos_t = vorher, time.time()
-        self._pos_roh = roh
+        # Der Tab schickt, wann Spotify diese Position gezeichnet hat (Date.now, gleiche Systemuhr)
+        t = d.get("pos_t")
+        self._pos_t = t / 1000 if isinstance(t, (int, float)) and t > 0 else time.time()
         # Nach einem Update liegt die neue Erweiterung im Ordner, Chrome laedt sie aber erst auf Zuruf neu.
         # Einmal pro Lauf: laedt Chrome sie aus einem anderen Ordner, bliebe es sonst eine Schleife.
         if d.get("version") != VERSION and not self._neu_geladen and self.ws:
@@ -1387,8 +1383,11 @@ class Api(BaseHTTPRequestHandler):
         pfad = self.path.rstrip("/")
         if pfad == "/stand":
             return self._json(self.app.letzter_stand)
-        if pfad == "/auswertung":
-            body = AUSWERTUNG.read_bytes()
+        if pfad == "/jetzt":                             # fuer den Banner: mit Cover-Adresse und laufender Position
+            sp = self.app.spotify
+            return self._json(dict(sp.stand, position=sp.position()))
+        if pfad in SEITEN:
+            body = SEITEN[pfad].read_bytes()
             self.send_response(200)
             self.send_header("content-type", "text/html; charset=utf-8")
             self.send_header("content-length", str(len(body)))

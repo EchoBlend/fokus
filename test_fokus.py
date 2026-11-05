@@ -141,6 +141,12 @@ def main():
     sp.empfangen({"verbunden": True, "version": "alt"})
     sp.empfangen({"verbunden": True, "version": "alt"})
     assert [g["cmd"] for g in gesendet[2:]] == ["neuladen"], gesendet
+    # Songtext-Takt: Position ab dem Zeitpunkt, den der Tab mitschickt (pos_t), nicht ab Empfang
+    sp2 = Spotify()
+    sp2.empfangen({"verbunden": True, "version": VERSION, "pos": 10.25, "pos_t": (time.time() - 2) * 1000, "spielt": True})
+    assert abs(sp2.position() - 12.25) < 0.05, sp2.position()
+    sp2.empfangen({"verbunden": True, "version": VERSION, "pos": 12.4, "pos_t": (time.time() - 5) * 1000, "spielt": False})
+    assert sp2.position() == 12.4                      # angehalten: steht
     manifest = json.loads((Spotify.ORDNER / "manifest.json").read_text("utf-8"))
     assert manifest["version"] == VERSION, "chrome-ext/manifest.json: version = VERSION setzen"
     # Pause verhaelt sich wie Arbeit: anhalten, weiter (bleibt Pause, Zeit laeuft weiter)

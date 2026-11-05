@@ -8,7 +8,7 @@ if ($LASTEXITCODE) { throw "Tests fehlgeschlagen" }
 
 & "$root\.venv\Scripts\pyinstaller.exe" --noconfirm --onefile --windowed --name Fokus `
     --icon "$root\assets\fokus.ico" --hidden-import pystray._win32 `
-    --add-data "$root\auswertung.html;." `
+    --add-data "$root\auswertung.html;." --add-data "$root\banner.html;." `
     --distpath "$root\dist" --workpath "$root\build" --specpath "$root\build" "$root\fokus.py"
 if ($LASTEXITCODE) { throw "PyInstaller fehlgeschlagen" }
 

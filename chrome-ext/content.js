@@ -56,12 +56,33 @@ function sek(t) {
   return n.some(isNaN) ? null : n.reduce((a, b) => a * 60 + b, 0);
 }
 
-// Abspielposition fuer den Songtext; Rueckfall: Fortschrittsregler (Werte in ms)
+// Abspielposition fuer den Songtext: [pos, dauer, quelle]. Der Text zeigt nur ganze Sekunden und
+// springt erst mit Spotifys Takt um (je Song bis ~1 s spaet) — die Fuellung der Leiste hat Bruchteile.
 function position() {
-  const p = $('[data-testid="playback-position"]'), d = $('[data-testid="playback-duration"]');
-  if (p && d) return [sek(p.textContent), sek(d.textContent)];
-  const r = $('[data-testid="playback-progressbar"] input[type="range"]');
-  return r ? [Number(r.value) / 1000, Number(r.max) / 1000] : [null, null];
+  const bar = $('[data-testid="playback-progressbar"]');
+  const r = bar && bar.querySelector('input[type="range"]');
+  const d = $('[data-testid="playback-duration"]'), p = $('[data-testid="playback-position"]');
+  const dauer = r && Number(r.max) > 0 ? Number(r.max) / 1000 : sek(d && d.textContent);
+  const f = bar && [bar, ...bar.querySelectorAll("*")].find((e) => (e.getAttribute("style") || "").includes("--progress-bar-transform"));
+  const m = f && /--progress-bar-transform:\s*([\d.]+)%/.exec(f.getAttribute("style"));
+  if (m && dauer) return [Number(m[1]) / 100 * dauer, dauer, "leiste"];
+  if (r) return [Number(r.value) / 1000, dauer, "regler"];
+  return p ? [sek(p.textContent), dauer, "text"] : [null, dauer, false];
+}
+
+function spielt() {
+  const ms = navigator.mediaSession;
+  if (ms && ms.playbackState && ms.playbackState !== "none") return ms.playbackState === "playing";
+  const pp = $(`[data-testid="${KNOEPFE.playpause}"]`);
+  return pp ? /paus/i.test(pp.getAttribute("aria-label") || "") : null;
+}
+
+// Position + Zeitpunkt, in dem Spotify sie gezeichnet hat (Observer laeuft direkt danach).
+// Die App rechnet damit exakt weiter, statt eine Verzoegerung zu schaetzen.
+let anker = { pos: null, dauer: null, quelle: false, spielt: null, t: 0 };
+function ankern() {
+  const [pos, dauer, quelle] = position(), sp = spielt();
+  if (pos !== anker.pos || sp !== anker.spielt || dauer !== anker.dauer) anker = { pos, dauer, quelle, spielt: sp, t: Date.now() };
 }
 
 function stand() {
@@ -69,26 +90,24 @@ function stand() {
   const md = ms && ms.metadata;
   const pp = $(`[data-testid="${KNOEPFE.playpause}"]`);
   const r = regler();
-  let spielt = null;
-  if (ms && ms.playbackState && ms.playbackState !== "none") spielt = ms.playbackState === "playing";
-  else if (pp) spielt = /paus/i.test(pp.getAttribute("aria-label") || "");
+  ankern();
   const titelEl = $('[data-testid="context-item-info-title"]');
   const kuenstler = [...document.querySelectorAll('[data-testid="context-item-info-artist"]')]
     .map((e) => e.textContent).join(", ");
   const art = md && md.artwork && md.artwork.length ? md.artwork[md.artwork.length - 1].src : null;
   const img = $('[data-testid="now-playing-widget"] img');
-  const [pos, dauer] = position();
   return {
     verbunden: true,
     version: VERSION,
     titel: (md && md.title) || (titelEl && titelEl.textContent) || "",
     kuenstler: (md && md.artist) || kuenstler,
     bild: art || (img && img.src) || null,
-    spielt,
+    spielt: anker.spielt,
     lautstaerke: lautAnzeige(),
     favorit: favorit(),
-    pos,
-    dauer,
+    pos: anker.pos,
+    pos_t: anker.t,
+    dauer: anker.dauer,
     gefunden: {
       playpause: !!pp,
       weiter: !!$(`[data-testid="${KNOEPFE.weiter}"]`),
@@ -96,7 +115,7 @@ function stand() {
       regler: !!r,
       leiste: !!leiste(),
       herz: !!herz(),
-      position: pos !== null,
+      position: anker.quelle,
       methode,
       mediasession: !!md,
     },
@@ -170,6 +189,7 @@ function melden() {
 }
 const beobachter = new MutationObserver(() => {
   if (!chrome.runtime?.id) { beobachter.disconnect(); return; }   // Erweiterung neu geladen: dieses Skript ist verwaist
+  ankern();
   if (!geplant) { geplant = true; setTimeout(melden, 300); }
 });
 beobachter.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
