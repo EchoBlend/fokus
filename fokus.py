@@ -39,7 +39,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.19"
+VERSION = "0.2.20"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -53,7 +53,7 @@ AUSWERTUNG_GROESSE = (800, 700)   # logische Pixel inkl. Titelleiste
 CW, CH = 276, 48        # Pille zu (logische Pixel)
 EW, EH = 344, 404       # Panel auf
 LH = 124                # Songtext-Karte, waechst unter dem Panel auf
-TEXT_NACHLAUF = 0.575   # s, um die eine Songtextzeile nach ihrem LRC-Zeitpunkt umschaltet (Timo 06.11.: war zu frueh)
+TEXT_NACHLAUF = 1.575   # s, um die eine Songtextzeile nach ihrem LRC-Zeitpunkt umschaltet (Timo 06.11.: war zu frueh)
 M = 24                  # Rand fuer den Schatten
 WW, WH = EW + 2 * M, EH + LH + 2 * M
 

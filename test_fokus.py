@@ -254,7 +254,7 @@ def ws_test():
     sp.text_an, sp.text = True, [(0.0, "a"), (5.0, "b")]
     sp.stand = {"pos": 5.0, "spielt": False}
     assert sp.index() == 0
-    sp.stand = {"pos": 5.7, "spielt": False}
+    sp.stand = {"pos": 6.7, "spielt": False}
     assert sp.index() == 1
 
     # Kompass-Export: buendeln je Tag+Titel, Pausen/Kurzes raus, Merker zaehlt
