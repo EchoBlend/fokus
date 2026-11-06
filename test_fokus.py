@@ -250,6 +250,12 @@ def ws_test():
     assert zeile_bei(z, 4) == "Zwei"
     assert zeile_bei(z, 6) is None          # Instrumental-Luecke
     assert zeile_bei(z, 99) == "Zwei"
+    sp = Spotify()                          # Umschalten nie vor dem Zeitstempel
+    sp.text_an, sp.text = True, [(0.0, "a"), (5.0, "b")]
+    sp.stand = {"pos": 5.0, "spielt": False}
+    assert sp.index() == 0
+    sp.stand = {"pos": 5.4, "spielt": False}
+    assert sp.index() == 1
 
     # Kompass-Export: buendeln je Tag+Titel, Pausen/Kurzes raus, Merker zaehlt
     from fokus_kompass import offen

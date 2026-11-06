@@ -39,7 +39,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-VERSION = "0.2.16"
+VERSION = "0.2.17"
 PORT = 47650
 DIR = Path(os.environ.get("APPDATA", Path.home())) / "Fokus"
 BLOECKE = DIR / "bloecke.jsonl"
@@ -53,6 +53,7 @@ AUSWERTUNG_GROESSE = (800, 700)   # logische Pixel inkl. Titelleiste
 CW, CH = 276, 48        # Pille zu (logische Pixel)
 EW, EH = 344, 404       # Panel auf
 LH = 124                # Songtext-Karte, waechst unter dem Panel auf
+TEXT_NACHLAUF = 0.25    # s, um die eine Songtextzeile nach ihrem LRC-Zeitpunkt umschaltet (Timo 06.11.: war zu frueh)
 M = 24                  # Rand fuer den Schatten
 WW, WH = EW + 2 * M, EH + LH + 2 * M
 
@@ -1325,7 +1326,8 @@ class Spotify:
     def index(self):
         """Index der laufenden Songtextzeile (-1 davor oder ohne Text)."""
         t = self.position()
-        return index_bei(self.text, t + 0.3) if self.text_an and self.text and t is not None else -1
+        # Lieber etwas spaet als zu frueh: die naechste Zeile ist schon lesbar, die laufende darf nicht weg sein
+        return index_bei(self.text, t - TEXT_NACHLAUF) if self.text_an and self.text and t is not None else -1
 
     def zeile(self):
         """Aktuelle Songtextzeile oder None (aus, nicht gefunden, Instrumental)."""
